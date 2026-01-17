@@ -1,0 +1,27 @@
+{
+  "name": "lifeos_sync",
+  "displayName": {
+    "default": "LifeOS Sync",
+    "zh_CN": "LifeOS 同步"
+  },
+  "description": {
+    "default": "Export-only sync from SiYuan to GitHub (markdown + assets).",
+    "zh_CN": "仅导出（Markdown+资源）到 GitHub，不做回写。"
+  },
+  "author": "lifeos",
+  "url": "https://github.com/yourname/lifeos_sync",
+  "version": "0.1.0",
+  "minAppVersion": "3.0.0",
+  "backends": [
+    "all"
+  ],
+  "frontends": [
+    "all"
+  ],
+  "disabledInPublish": false,
+  "readme": {
+    "default": "README.md"
+  },
+  "license": "MIT",
+  "keywords": ["export", "github", "markdown", "assets", "lifeos"]
+}
