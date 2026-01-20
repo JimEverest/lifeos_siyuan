@@ -9,6 +9,7 @@ export interface Settings {
   ignoreNotebooks: string[];
   ignorePaths: string[];
   ignoreTags: string[];
+  autoSync: AutoSyncConfig;      // 自动同步配置
 }
 
 export interface RepoInfo {
@@ -88,4 +89,47 @@ export interface AssetSyncResult {
   skipped: number;
   failed: number;
   errors: Array<{ path: string; error: string }>;
+}
+
+// ============================================================================
+// Auto Sync Types
+// ============================================================================
+
+export interface AutoSyncConfig {
+  enabled: boolean;              // 是否启用自动同步
+  interval: number;              // 同步间隔（分钟）
+  syncDocs: boolean;             // 同步文档
+  syncAssets: boolean;           // 同步资源
+  onlyWhenIdle: boolean;         // 仅在空闲时同步
+  maxConcurrency: number;        // 最大并发数
+}
+
+export interface IncrementalSyncResult {
+  docsScanned: number;           // 扫描的文档数
+  docsChanged: number;           // 变化的文档数
+  docsUploaded: number;          // 上传的文档数
+  docsSkipped: number;           // 跳过的文档数
+  docsFailed: number;            // 失败的文档数
+  assetsScanned: number;         // 扫描的资源数
+  assetsChanged: number;         // 变化的资源数
+  assetsUploaded: number;        // 上传的资源数
+  assetsSkipped: number;         // 跳过的资源数
+  assetsFailed: number;          // 失败的资源数
+  totalTime: number;             // 总耗时（毫秒）
+  errors: Array<{ path: string; error: string }>;
+}
+
+export interface DocMetadata {
+  id: string;
+  box: string;
+  path: string;
+  hpath: string;
+  name: string;
+  updated: number;               // SiYuan 更新时间戳
+}
+
+export interface AssetMetadata {
+  path: string;
+  size: number;
+  mtime: number;                 // 文件修改时间戳
 }

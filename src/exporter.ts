@@ -194,6 +194,7 @@ export async function exportCurrentDocToGit(
   blockId: string | null,
   settings: Settings,
   onProgress?: (message: string) => void,
+  skipAssets: boolean = false, // 增量同步时跳过assets（会在后面统一处理）
 ): Promise<void> {
   await logInfo(`Export start, docId=${docId}, blockId=${blockId}`);
   onProgress?.("Resolving document ID...");
@@ -252,7 +253,12 @@ export async function exportCurrentDocToGit(
     return;
   }
 
-  const filePath = joinPath(settings.exportRoot, notebookName, ...hpathParts, `${title}.md`);
+  const filePath = joinPath(
+    settings.exportRoot,
+    sanitizeName(notebookName),
+    ...hpathParts.map(p => sanitizeName(p)),
+    `${sanitizeName(title)}.md`
+  );
 
   onProgress?.("Exporting markdown...");
   const markdownRaw = await exportMarkdown(docId);
@@ -293,53 +299,78 @@ export async function exportCurrentDocToGit(
     markdown,
   );
 
+  // 调试日志：查看返回结构
+  await logInfo(`[GitHub] Upload response: ${JSON.stringify(uploadResult).substring(0, 200)}`);
+
+  // 提取 GitHub SHA
+  let githubSHA: string;
+  if (uploadResult && uploadResult.content && uploadResult.content.sha) {
+    githubSHA = uploadResult.content.sha;
+  } else if (uploadResult && uploadResult.sha) {
+    // 有些情况下SHA可能在顶层
+    githubSHA = uploadResult.sha;
+  } else {
+    await logError(`[GitHub] Invalid response structure: ${JSON.stringify(uploadResult)}`);
+    throw new Error(`GitHub upload failed: no SHA returned for ${filePath}`);
+  }
+
+  await logInfo(`[GitHub] File uploaded, SHA: ${githubSHA}`);
+
   // Update cache after successful upload
-  await updateDocCacheEntry(plugin, info.box, usedId, {
+  const cacheEntry = {
     docId: usedId,
     notebookId: info.box,
     githubPath: filePath,
     contentHash,
-    githubSHA: uploadResult?.content?.sha || "unknown",
+    githubSHA: githubSHA,
     lastSyncTime: Date.now(),
     siyuanUpdated: info.updated || Date.now(),
-  });
+  };
+  await logInfo(`[Exporter] About to update cache with entry: ${JSON.stringify(cacheEntry)}`);
+  await updateDocCacheEntry(plugin, info.box, usedId, cacheEntry);
 
-  let assets: string[] = [];
-  if (settings.exportAllAssets) {
-    onProgress?.("Collecting all assets...");
-    assets = (await listAllAssets()).map((a) => a.replace(/^assets\//, ""));
-  } else {
-    onProgress?.("Collecting referenced assets...");
-    assets = collectAssetPathsFromMarkdown(markdown).map((a) => a.replace(/^assets\//, ""));
-  }
-
-  if (assets.length > 0) {
-    for (let i = 0; i < assets.length; i++) {
-      const asset = assets[i];
-      onProgress?.(`Uploading asset ${i + 1}/${assets.length}: ${asset.split("/").pop()}...`);
-
-      const normalized = asset.replace(/^assets\//, "");
-      const assetPath = joinPath(settings.exportRoot, assetsDir, normalized);
-      const blob = await getFileBlob(`data/assets/${normalized}`);
-      if (!blob) {
-        continue;
-      }
-      const buffer = await blob.arrayBuffer();
-      await createOrUpdateBinaryFile(
-        {
-          owner: repo.owner,
-          repo: repo.repo,
-          branch: settings.branch,
-          token: settings.token,
-          path: assetPath,
-          contentBase64: "",
-          message: `Export asset ${asset}`,
-        },
-        buffer,
-      );
+  // 如果是增量同步，跳过assets上传（会在后面统一处理）
+  if (!skipAssets) {
+    let assets: string[] = [];
+    if (settings.exportAllAssets) {
+      onProgress?.("Collecting all assets...");
+      assets = (await listAllAssets()).map((a) => a.replace(/^assets\//, ""));
+    } else {
+      onProgress?.("Collecting referenced assets...");
+      assets = collectAssetPathsFromMarkdown(markdown).map((a) => a.replace(/^assets\//, ""));
     }
-  }
 
-  await logInfo(`Exported doc ${docId} to ${filePath}`);
-  onProgress?.(`Done: 1 doc, ${assets.length} asset${assets.length !== 1 ? "s" : ""}`);
+    if (assets.length > 0) {
+      for (let i = 0; i < assets.length; i++) {
+        const asset = assets[i];
+        onProgress?.(`Uploading asset ${i + 1}/${assets.length}: ${asset.split("/").pop()}...`);
+
+        const normalized = asset.replace(/^assets\//, "");
+        const assetPath = joinPath(settings.exportRoot, assetsDir, normalized);
+        const blob = await getFileBlob(`data/assets/${normalized}`);
+        if (!blob) {
+          continue;
+        }
+        const buffer = await blob.arrayBuffer();
+        await createOrUpdateBinaryFile(
+          {
+            owner: repo.owner,
+            repo: repo.repo,
+            branch: settings.branch,
+            token: settings.token,
+            path: assetPath,
+            contentBase64: "",
+            message: `Export asset ${asset}`,
+          },
+          buffer,
+        );
+      }
+    }
+
+    await logInfo(`Exported doc ${docId} to ${filePath}`);
+    onProgress?.(`Done: 1 doc, ${assets.length} asset${assets.length !== 1 ? "s" : ""}`);
+  } else {
+    await logInfo(`Exported doc ${docId} to ${filePath} (assets skipped - will sync separately)`);
+    onProgress?.("Document uploaded (assets will sync separately)");
+  }
 }

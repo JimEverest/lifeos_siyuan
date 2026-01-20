@@ -74,7 +74,7 @@ async function proxyFetch(url: string, options: RequestInit): Promise<Response> 
       method: options.method || "GET",
       headers,
       payload: payload,
-      timeout: 30000, // 30 seconds
+      timeout: 300000, // 300 seconds (5 minutes) for large files
     }),
   });
 
@@ -142,7 +142,7 @@ async function getFileSha(opts: GitWriteOptions): Promise<string | null> {
   return data && data.sha ? data.sha : null;
 }
 
-export async function createOrUpdateTextFile(opts: GitWriteOptions, content: string): Promise<void> {
+export async function createOrUpdateTextFile(opts: GitWriteOptions, content: string): Promise<any> {
   const sha = await getFileSha(opts);
   const body = {
     message: opts.message,
@@ -150,10 +150,10 @@ export async function createOrUpdateTextFile(opts: GitWriteOptions, content: str
     branch: opts.branch,
     sha: sha ?? undefined,
   };
-  await writeFile(opts, body);
+  return await writeFile(opts, body);
 }
 
-export async function createOrUpdateBinaryFile(opts: GitWriteOptions, buffer: ArrayBuffer): Promise<void> {
+export async function createOrUpdateBinaryFile(opts: GitWriteOptions, buffer: ArrayBuffer): Promise<any> {
   const sha = await getFileSha(opts);
   const body = {
     message: opts.message,
@@ -161,10 +161,10 @@ export async function createOrUpdateBinaryFile(opts: GitWriteOptions, buffer: Ar
     branch: opts.branch,
     sha: sha ?? undefined,
   };
-  await writeFile(opts, body);
+  return await writeFile(opts, body);
 }
 
-async function writeFile(opts: GitWriteOptions, body: any): Promise<void> {
+async function writeFile(opts: GitWriteOptions, body: any): Promise<any> {
   const url = `https://api.github.com/repos/${opts.owner}/${opts.repo}/contents/${opts.path}`;
   const res = await proxyFetch(url, {
     method: "PUT",
@@ -175,8 +175,46 @@ async function writeFile(opts: GitWriteOptions, body: any): Promise<void> {
     },
     body: JSON.stringify(body),
   });
+
   if (!res.ok) {
     const text = await res.text();
+
+    // Check for 409 conflict (SHA mismatch)
+    try {
+      const errorData = JSON.parse(text);
+      if (res.status === 409 && errorData.status === "409") {
+        // SHA conflict detected - retry with fresh SHA
+        console.warn(`lifeos_sync: 409 conflict for ${opts.path}, retrying with fresh SHA`);
+        const freshSha = await getFileSha(opts);
+        body.sha = freshSha ?? undefined;
+
+        // Retry once with fresh SHA
+        const retryRes = await proxyFetch(url, {
+          method: "PUT",
+          headers: {
+            Authorization: `token ${opts.token}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!retryRes.ok) {
+          const retryText = await retryRes.text();
+          throw new Error(`GitHub write failed after retry: ${retryText}`);
+        }
+
+        const retryData = await retryRes.json();
+        return retryData;
+      }
+    } catch (parseError) {
+      // Not JSON or different error, fall through
+    }
+
     throw new Error(`GitHub write failed: ${text}`);
   }
+
+  // 返回 GitHub API 响应
+  const responseData = await res.json();
+  return responseData;
 }

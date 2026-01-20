@@ -89,11 +89,22 @@ export async function uploadAssetWithCache(
   onProgress?: (message: string) => void
 ): Promise<boolean> {
   try {
+    // 0. Check file size limit (100 MB = GitHub API limit)
+    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+    if (asset.size > MAX_FILE_SIZE) {
+      const sizeMB = (asset.size / (1024 * 1024)).toFixed(2);
+      const msg = `[Skipped] ${asset.path} too large (${sizeMB} MB > 100 MB limit)`;
+      onProgress?.(msg);
+      await logInfo(`[Assets] ${msg}`);
+      return false; // Skip large files
+    }
+
     // 1. Read file content
-    onProgress?.(`Reading ${asset.path}...`);
+    onProgress?.(`[Reading] ${asset.path} (${formatFileSize(asset.size)})`);
     const content = await readAssetFile(asset.path);
 
     // 2. Calculate hash
+    onProgress?.(`[Hashing] ${asset.path} (${formatFileSize(asset.size)})`);
     const contentHash = await calculateFileHash(content);
 
     // 3. Check cache
@@ -105,7 +116,8 @@ export async function uploadAssetWithCache(
     }
 
     // 4. Upload to GitHub
-    onProgress?.(`[Uploading] ${asset.path} (${formatFileSize(asset.size)})`);
+    const sizeMB = (asset.size / (1024 * 1024)).toFixed(2);
+    onProgress?.(`[Uploading] ${asset.path} (${sizeMB} MB)`);
     const githubPath = `${settings.assetsDir}/${asset.path}`;
     const githubSHA = await uploadFileToGitHub(
       Buffer.from(content),
@@ -114,15 +126,17 @@ export async function uploadAssetWithCache(
     );
 
     // 5. Update cache
-    await updateAssetCacheEntry(plugin, asset.path, {
+    const cacheEntry = {
       assetPath: asset.path,
       contentHash,
       githubSHA,
       lastSyncTime: Date.now(),
       fileSize: asset.size,
-    });
+    };
+    await logInfo(`[Assets] About to update cache with entry: ${JSON.stringify(cacheEntry)}`);
+    await updateAssetCacheEntry(plugin, asset.path, cacheEntry);
 
-    onProgress?.(`[Uploaded] ${asset.path}`);
+    onProgress?.(`[✓ Uploaded] ${asset.path} (${sizeMB} MB)`);
     return true; // Upload completed
 
   } catch (error) {
@@ -168,8 +182,19 @@ async function uploadFileToGitHub(
     content.buffer
   );
 
-  await logInfo(`[Assets] Upload completed: ${path}`);
-  return result?.content?.sha || "unknown";
+  // 提取 GitHub SHA
+  let githubSHA: string;
+  if (result && result.content && result.content.sha) {
+    githubSHA = result.content.sha;
+  } else if (result && result.sha) {
+    githubSHA = result.sha;
+  } else {
+    await logError(`[Assets] Invalid GitHub response for ${path}: ${JSON.stringify(result).substring(0, 200)}`);
+    throw new Error(`GitHub upload failed: no SHA returned for ${path}`);
+  }
+
+  await logInfo(`[Assets] Upload completed: ${path}, SHA: ${githubSHA}`);
+  return githubSHA;
 }
 
 // ============================================================================

@@ -3,6 +3,9 @@ var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -17,205 +20,18 @@ var __copyProps = (to, from, except, desc) => {
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// src/index.ts
-var src_exports = {};
-__export(src_exports, {
-  default: () => LifeosSyncPlugin
-});
-module.exports = __toCommonJS(src_exports);
-var import_siyuan = require("siyuan");
-
 // src/constants.ts
-var SETTINGS_FILE = "settings.json";
-var LOG_FILE_PATH = "temp/lifeos_sync.log";
-var DEFAULT_EXPORT_ROOT = "";
-var DEFAULT_ASSETS_DIR = "assets";
-var DEFAULT_EXPORT_ALL_ASSETS = false;
-
-// src/settings.ts
-var DEFAULT_SETTINGS = {
-  repoUrl: "",
-  branch: "main",
-  token: "",
-  exportRoot: DEFAULT_EXPORT_ROOT,
-  assetsDir: DEFAULT_ASSETS_DIR,
-  cleanFrontmatter: true,
-  exportAllAssets: DEFAULT_EXPORT_ALL_ASSETS,
-  ignoreNotebooks: [],
-  ignorePaths: [],
-  ignoreTags: []
-};
-async function loadSettings(plugin) {
-  const data = await plugin.loadData(SETTINGS_FILE);
-  return { ...DEFAULT_SETTINGS, ...data ?? {} };
-}
-async function saveSettings(plugin, settings) {
-  await plugin.saveData(SETTINGS_FILE, settings);
-}
-
-// src/git.ts
-function parseRepoUrl(url) {
-  const cleaned = (url || "").trim().replace(/\.git$/, "");
-  const https = cleaned.match(/^https?:\/\/[^/]+\/([^/]+)\/([^/]+)$/);
-  if (https) {
-    return { owner: https[1], repo: https[2] };
+var SETTINGS_FILE, LOG_FILE_PATH, DEFAULT_EXPORT_ROOT, DEFAULT_ASSETS_DIR, DEFAULT_EXPORT_ALL_ASSETS;
+var init_constants = __esm({
+  "src/constants.ts"() {
+    "use strict";
+    SETTINGS_FILE = "settings.json";
+    LOG_FILE_PATH = "temp/lifeos_sync.log";
+    DEFAULT_EXPORT_ROOT = "";
+    DEFAULT_ASSETS_DIR = "assets";
+    DEFAULT_EXPORT_ALL_ASSETS = false;
   }
-  const ssh = cleaned.match(/^git@[^:]+:([^/]+)\/([^/]+)$/);
-  if (ssh) {
-    return { owner: ssh[1], repo: ssh[2] };
-  }
-  return null;
-}
-function base64FromUtf8(text) {
-  return btoa(unescape(encodeURIComponent(text)));
-}
-function base64FromArrayBuffer(buffer) {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.length; i += 1) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-async function proxyFetch(url, options) {
-  const headers = [];
-  if (options.headers) {
-    if (options.headers instanceof Headers) {
-      options.headers.forEach((value, key) => {
-        headers.push({ [key]: value });
-      });
-    } else if (Array.isArray(options.headers)) {
-      for (const [key, value] of options.headers) {
-        headers.push({ [key]: value });
-      }
-    } else {
-      for (const [key, value] of Object.entries(options.headers)) {
-        headers.push({ [key]: value });
-      }
-    }
-  }
-  let payload = null;
-  if (options.body) {
-    if (typeof options.body === "string") {
-      try {
-        payload = JSON.parse(options.body);
-      } catch {
-        payload = options.body;
-      }
-    } else {
-      payload = options.body;
-    }
-  }
-  const proxyRes = await fetch("/api/network/forwardProxy", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      url,
-      method: options.method || "GET",
-      headers,
-      payload,
-      timeout: 3e4
-      // 30 seconds
-    })
-  });
-  if (!proxyRes.ok) {
-    const errorText = await proxyRes.text();
-    throw new Error(`SiYuan proxy request failed: ${errorText}`);
-  }
-  const proxyData = await proxyRes.json();
-  if (proxyData.code !== 0) {
-    throw new Error(`SiYuan proxy error: ${proxyData.msg || "Unknown error"}`);
-  }
-  const responseData = proxyData.data;
-  if (!responseData) {
-    console.error("lifeos_sync: forwardProxy returned null data. Full response:", proxyData);
-    throw new Error("SiYuan forwardProxy returned null data");
-  }
-  return {
-    ok: responseData.status >= 200 && responseData.status < 300,
-    status: responseData.status,
-    statusText: responseData.statusText || "",
-    headers: new Headers(responseData.headers || {}),
-    text: async () => responseData.body || "",
-    json: async () => {
-      try {
-        return JSON.parse(responseData.body || "{}");
-      } catch {
-        return {};
-      }
-    },
-    blob: async () => new Blob([responseData.body || ""]),
-    arrayBuffer: async () => new TextEncoder().encode(responseData.body || "").buffer,
-    clone: function() {
-      return this;
-    },
-    bodyUsed: false,
-    body: null,
-    type: "basic",
-    url,
-    redirected: false,
-    formData: async () => {
-      throw new Error("Not implemented");
-    }
-  };
-}
-async function getFileSha(opts) {
-  const url = `https://api.github.com/repos/${opts.owner}/${opts.repo}/contents/${opts.path}?ref=${opts.branch}`;
-  const res = await proxyFetch(url, {
-    method: "GET",
-    headers: {
-      Authorization: `token ${opts.token}`,
-      Accept: "application/vnd.github+json"
-    }
-  });
-  if (res.status === 404) {
-    return null;
-  }
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GitHub get file failed: ${text}`);
-  }
-  const data = await res.json();
-  return data && data.sha ? data.sha : null;
-}
-async function createOrUpdateTextFile(opts, content) {
-  const sha = await getFileSha(opts);
-  const body = {
-    message: opts.message,
-    content: base64FromUtf8(content),
-    branch: opts.branch,
-    sha: sha ?? void 0
-  };
-  await writeFile(opts, body);
-}
-async function createOrUpdateBinaryFile(opts, buffer) {
-  const sha = await getFileSha(opts);
-  const body = {
-    message: opts.message,
-    content: base64FromArrayBuffer(buffer),
-    branch: opts.branch,
-    sha: sha ?? void 0
-  };
-  await writeFile(opts, body);
-}
-async function writeFile(opts, body) {
-  const url = `https://api.github.com/repos/${opts.owner}/${opts.repo}/contents/${opts.path}`;
-  const res = await proxyFetch(url, {
-    method: "PUT",
-    headers: {
-      Authorization: `token ${opts.token}`,
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GitHub write failed: ${text}`);
-  }
-}
+});
 
 // src/siyuan-api.ts
 async function apiPost(url, data) {
@@ -437,9 +253,20 @@ function getActiveDocRefFromDOM() {
   console.error("lifeos_sync: \u2717 No doc ID found through any method");
   return { docId: null, blockId: null };
 }
+var init_siyuan_api = __esm({
+  "src/siyuan-api.ts"() {
+    "use strict";
+  }
+});
 
 // src/logger.ts
-var enabled = false;
+var logger_exports = {};
+__export(logger_exports, {
+  flushAllLogs: () => flushAllLogs,
+  initLogger: () => initLogger,
+  logError: () => logError,
+  logInfo: () => logInfo
+});
 function initLogger() {
   enabled = true;
 }
@@ -448,16 +275,42 @@ function formatLine(level, message) {
   return `[${ts}] [${level}] ${message}
 `;
 }
+async function flushLogs() {
+  if (logBuffer.length === 0) {
+    return;
+  }
+  try {
+    const toFlush = logBuffer.join("");
+    logBuffer = [];
+    const existing = await readTextFile(LOG_FILE_PATH);
+    const next = existing + toFlush;
+    await putFile(LOG_FILE_PATH, new Blob([next], { type: "text/plain" }));
+  } catch (err) {
+    console.warn("lifeos_sync log flush failed", err);
+  }
+}
+function scheduleFlush() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+  }
+  flushTimer = setTimeout(() => {
+    void flushLogs();
+    flushTimer = null;
+  }, FLUSH_INTERVAL_MS);
+}
 async function appendLog(level, message) {
   if (!enabled) {
     return;
   }
-  try {
-    const existing = await readTextFile(LOG_FILE_PATH);
-    const next = existing + formatLine(level, message);
-    await putFile(LOG_FILE_PATH, new Blob([next], { type: "text/plain" }));
-  } catch (err) {
-    console.warn("lifeos_sync log append failed", err);
+  logBuffer.push(formatLine(level, message));
+  if (logBuffer.length >= MAX_BUFFER_SIZE) {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    await flushLogs();
+  } else {
+    scheduleFlush();
   }
 }
 async function logInfo(message) {
@@ -469,6 +322,26 @@ async function logError(message, err) {
   const detail = err instanceof Error ? `${message} :: ${err.message}` : message;
   await appendLog("ERROR", detail);
 }
+async function flushAllLogs() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  await flushLogs();
+}
+var enabled, logBuffer, flushTimer, FLUSH_INTERVAL_MS, MAX_BUFFER_SIZE;
+var init_logger = __esm({
+  "src/logger.ts"() {
+    "use strict";
+    init_constants();
+    init_siyuan_api();
+    enabled = false;
+    logBuffer = [];
+    flushTimer = null;
+    FLUSH_INTERVAL_MS = 5e3;
+    MAX_BUFFER_SIZE = 100;
+  }
+});
 
 // src/hash-utils.ts
 function simpleHash(str) {
@@ -517,15 +390,60 @@ async function calculateFileHash(content) {
 async function calculateShardHash(text) {
   return calculateHash(text);
 }
+var init_hash_utils = __esm({
+  "src/hash-utils.ts"() {
+    "use strict";
+  }
+});
 
 // src/cache-manager.ts
-var ASSET_SHARD_COUNT = 16;
+var cache_manager_exports = {};
+__export(cache_manager_exports, {
+  clearAllAssetCache: () => clearAllAssetCache,
+  clearAllCache: () => clearAllCache,
+  clearNotebookCache: () => clearNotebookCache,
+  getAssetCacheEntry: () => getAssetCacheEntry,
+  getDocCacheEntry: () => getDocCacheEntry,
+  getNotebookDocIds: () => getNotebookDocIds,
+  getTotalCachedAssets: () => getTotalCachedAssets,
+  getTotalCachedDocs: () => getTotalCachedDocs,
+  loadNotebookDocCache: () => loadNotebookDocCache,
+  loadSyncMeta: () => loadSyncMeta,
+  removeAssetCacheEntry: () => removeAssetCacheEntry,
+  removeDocCacheEntry: () => removeDocCacheEntry,
+  saveNotebookDocCache: () => saveNotebookDocCache,
+  saveSyncMeta: () => saveSyncMeta,
+  updateAssetCacheEntry: () => updateAssetCacheEntry,
+  updateDocCacheEntry: () => updateDocCacheEntry,
+  updateNotebookMeta: () => updateNotebookMeta
+});
 function getNotebookCacheFile(notebookId) {
   return `notebook-${notebookId}-docs.json`;
 }
 async function getAssetShard(assetPath) {
   const hash = await calculateShardHash(assetPath);
   return parseInt(hash.substring(0, 2), 16) % ASSET_SHARD_COUNT;
+}
+async function loadSyncMeta(plugin) {
+  const meta = await plugin.loadData(SYNC_META_FILE);
+  return meta || {
+    lastFullSync: 0,
+    notebooks: {}
+  };
+}
+async function saveSyncMeta(plugin, meta) {
+  await plugin.saveData(SYNC_META_FILE, meta);
+}
+async function updateNotebookMeta(plugin, notebookId, notebookName, docCount) {
+  await logInfo(`[Cache] Updating notebook meta: ${notebookName} (${docCount} docs)`);
+  const meta = await loadSyncMeta(plugin);
+  meta.notebooks[notebookId] = {
+    notebookId,
+    notebookName,
+    docCount,
+    lastSyncTime: Date.now()
+  };
+  await saveSyncMeta(plugin, meta);
 }
 async function loadNotebookDocCache(plugin, notebookId) {
   const cacheFile = getNotebookCacheFile(notebookId);
@@ -534,7 +452,10 @@ async function loadNotebookDocCache(plugin, notebookId) {
 }
 async function saveNotebookDocCache(plugin, notebookId, cache) {
   const cacheFile = getNotebookCacheFile(notebookId);
+  const preview = JSON.stringify(cache).substring(0, 500);
+  await logInfo(`[Cache] Saving to ${cacheFile}: ${preview}...`);
   await plugin.saveData(cacheFile, cache);
+  await logInfo(`[Cache] Save completed for ${cacheFile}`);
 }
 async function getDocCacheEntry(plugin, notebookId, docId) {
   const cache = await loadNotebookDocCache(plugin, notebookId);
@@ -548,9 +469,19 @@ async function getDocCacheEntry(plugin, notebookId, docId) {
 }
 async function updateDocCacheEntry(plugin, notebookId, docId, entry) {
   await logInfo(`[Cache] Updating doc cache: ${docId} -> ${entry.githubPath}`);
+  await logInfo(`[Cache] Entry data: ${JSON.stringify(entry)}`);
   const cache = await loadNotebookDocCache(plugin, notebookId);
   cache[docId] = entry;
   await saveNotebookDocCache(plugin, notebookId, cache);
+}
+async function removeDocCacheEntry(plugin, notebookId, docId) {
+  const cache = await loadNotebookDocCache(plugin, notebookId);
+  delete cache[docId];
+  await saveNotebookDocCache(plugin, notebookId, cache);
+}
+async function getNotebookDocIds(plugin, notebookId) {
+  const cache = await loadNotebookDocCache(plugin, notebookId);
+  return Object.keys(cache);
 }
 async function loadAssetCacheShard(plugin, shard) {
   const cacheFile = `assets-${shard}.json`;
@@ -577,8 +508,300 @@ async function updateAssetCacheEntry(plugin, assetPath, entry) {
   cache[assetPath] = entry;
   await saveAssetCacheShard(plugin, shard, cache);
 }
+async function removeAssetCacheEntry(plugin, assetPath) {
+  const shard = await getAssetShard(assetPath);
+  const cache = await loadAssetCacheShard(plugin, shard);
+  delete cache[assetPath];
+  await saveAssetCacheShard(plugin, shard, cache);
+}
+async function getTotalCachedDocs(plugin) {
+  const meta = await loadSyncMeta(plugin);
+  return Object.values(meta.notebooks).reduce((sum, nb) => sum + nb.docCount, 0);
+}
+async function getTotalCachedAssets(plugin) {
+  let total = 0;
+  for (let shard = 0; shard < ASSET_SHARD_COUNT; shard++) {
+    const cache = await loadAssetCacheShard(plugin, shard);
+    total += Object.keys(cache).length;
+  }
+  return total;
+}
+async function clearNotebookCache(plugin, notebookId) {
+  const cacheFile = getNotebookCacheFile(notebookId);
+  await plugin.removeData(cacheFile);
+  const meta = await loadSyncMeta(plugin);
+  delete meta.notebooks[notebookId];
+  await saveSyncMeta(plugin, meta);
+}
+async function clearAllAssetCache(plugin) {
+  for (let shard = 0; shard < ASSET_SHARD_COUNT; shard++) {
+    const cacheFile = `assets-${shard}.json`;
+    await plugin.removeData(cacheFile);
+  }
+}
+async function clearAllCache(plugin) {
+  const meta = await loadSyncMeta(plugin);
+  for (const notebookId of Object.keys(meta.notebooks)) {
+    const cacheFile = getNotebookCacheFile(notebookId);
+    await plugin.removeData(cacheFile);
+  }
+  await clearAllAssetCache(plugin);
+  await plugin.removeData(SYNC_META_FILE);
+  await plugin.removeData("last-asset-sync-time");
+}
+var SYNC_META_FILE, ASSET_SHARD_COUNT;
+var init_cache_manager = __esm({
+  "src/cache-manager.ts"() {
+    "use strict";
+    init_logger();
+    init_hash_utils();
+    SYNC_META_FILE = "sync-meta.json";
+    ASSET_SHARD_COUNT = 16;
+  }
+});
+
+// src/index.ts
+var src_exports = {};
+__export(src_exports, {
+  default: () => LifeosSyncPlugin
+});
+module.exports = __toCommonJS(src_exports);
+var import_siyuan = require("siyuan");
+
+// src/settings.ts
+init_constants();
+var DEFAULT_SETTINGS = {
+  repoUrl: "",
+  branch: "main",
+  token: "",
+  exportRoot: DEFAULT_EXPORT_ROOT,
+  assetsDir: DEFAULT_ASSETS_DIR,
+  cleanFrontmatter: true,
+  exportAllAssets: DEFAULT_EXPORT_ALL_ASSETS,
+  ignoreNotebooks: [],
+  ignorePaths: [],
+  ignoreTags: [],
+  autoSync: {
+    enabled: false,
+    // 默认禁用自动同步
+    interval: 30,
+    // 默认30分钟
+    syncDocs: true,
+    // 同步文档
+    syncAssets: true,
+    // 同步资源
+    onlyWhenIdle: false,
+    // 不限制空闲时
+    maxConcurrency: 5
+    // 最大并发数
+  }
+};
+async function loadSettings(plugin) {
+  const data = await plugin.loadData(SETTINGS_FILE);
+  return { ...DEFAULT_SETTINGS, ...data ?? {} };
+}
+async function saveSettings(plugin, settings) {
+  await plugin.saveData(SETTINGS_FILE, settings);
+}
 
 // src/exporter.ts
+init_constants();
+
+// src/git.ts
+function parseRepoUrl(url) {
+  const cleaned = (url || "").trim().replace(/\.git$/, "");
+  const https = cleaned.match(/^https?:\/\/[^/]+\/([^/]+)\/([^/]+)$/);
+  if (https) {
+    return { owner: https[1], repo: https[2] };
+  }
+  const ssh = cleaned.match(/^git@[^:]+:([^/]+)\/([^/]+)$/);
+  if (ssh) {
+    return { owner: ssh[1], repo: ssh[2] };
+  }
+  return null;
+}
+function base64FromUtf8(text) {
+  return btoa(unescape(encodeURIComponent(text)));
+}
+function base64FromArrayBuffer(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+async function proxyFetch(url, options) {
+  const headers = [];
+  if (options.headers) {
+    if (options.headers instanceof Headers) {
+      options.headers.forEach((value, key) => {
+        headers.push({ [key]: value });
+      });
+    } else if (Array.isArray(options.headers)) {
+      for (const [key, value] of options.headers) {
+        headers.push({ [key]: value });
+      }
+    } else {
+      for (const [key, value] of Object.entries(options.headers)) {
+        headers.push({ [key]: value });
+      }
+    }
+  }
+  let payload = null;
+  if (options.body) {
+    if (typeof options.body === "string") {
+      try {
+        payload = JSON.parse(options.body);
+      } catch {
+        payload = options.body;
+      }
+    } else {
+      payload = options.body;
+    }
+  }
+  const proxyRes = await fetch("/api/network/forwardProxy", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      url,
+      method: options.method || "GET",
+      headers,
+      payload,
+      timeout: 3e5
+      // 300 seconds (5 minutes) for large files
+    })
+  });
+  if (!proxyRes.ok) {
+    const errorText = await proxyRes.text();
+    throw new Error(`SiYuan proxy request failed: ${errorText}`);
+  }
+  const proxyData = await proxyRes.json();
+  if (proxyData.code !== 0) {
+    throw new Error(`SiYuan proxy error: ${proxyData.msg || "Unknown error"}`);
+  }
+  const responseData = proxyData.data;
+  if (!responseData) {
+    console.error("lifeos_sync: forwardProxy returned null data. Full response:", proxyData);
+    throw new Error("SiYuan forwardProxy returned null data");
+  }
+  return {
+    ok: responseData.status >= 200 && responseData.status < 300,
+    status: responseData.status,
+    statusText: responseData.statusText || "",
+    headers: new Headers(responseData.headers || {}),
+    text: async () => responseData.body || "",
+    json: async () => {
+      try {
+        return JSON.parse(responseData.body || "{}");
+      } catch {
+        return {};
+      }
+    },
+    blob: async () => new Blob([responseData.body || ""]),
+    arrayBuffer: async () => new TextEncoder().encode(responseData.body || "").buffer,
+    clone: function() {
+      return this;
+    },
+    bodyUsed: false,
+    body: null,
+    type: "basic",
+    url,
+    redirected: false,
+    formData: async () => {
+      throw new Error("Not implemented");
+    }
+  };
+}
+async function getFileSha(opts) {
+  const url = `https://api.github.com/repos/${opts.owner}/${opts.repo}/contents/${opts.path}?ref=${opts.branch}`;
+  const res = await proxyFetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `token ${opts.token}`,
+      Accept: "application/vnd.github+json"
+    }
+  });
+  if (res.status === 404) {
+    return null;
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GitHub get file failed: ${text}`);
+  }
+  const data = await res.json();
+  return data && data.sha ? data.sha : null;
+}
+async function createOrUpdateTextFile(opts, content) {
+  const sha = await getFileSha(opts);
+  const body = {
+    message: opts.message,
+    content: base64FromUtf8(content),
+    branch: opts.branch,
+    sha: sha ?? void 0
+  };
+  return await writeFile(opts, body);
+}
+async function createOrUpdateBinaryFile(opts, buffer) {
+  const sha = await getFileSha(opts);
+  const body = {
+    message: opts.message,
+    content: base64FromArrayBuffer(buffer),
+    branch: opts.branch,
+    sha: sha ?? void 0
+  };
+  return await writeFile(opts, body);
+}
+async function writeFile(opts, body) {
+  const url = `https://api.github.com/repos/${opts.owner}/${opts.repo}/contents/${opts.path}`;
+  const res = await proxyFetch(url, {
+    method: "PUT",
+    headers: {
+      Authorization: `token ${opts.token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    try {
+      const errorData = JSON.parse(text);
+      if (res.status === 409 && errorData.status === "409") {
+        console.warn(`lifeos_sync: 409 conflict for ${opts.path}, retrying with fresh SHA`);
+        const freshSha = await getFileSha(opts);
+        body.sha = freshSha ?? void 0;
+        const retryRes = await proxyFetch(url, {
+          method: "PUT",
+          headers: {
+            Authorization: `token ${opts.token}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(body)
+        });
+        if (!retryRes.ok) {
+          const retryText = await retryRes.text();
+          throw new Error(`GitHub write failed after retry: ${retryText}`);
+        }
+        const retryData = await retryRes.json();
+        return retryData;
+      }
+    } catch (parseError) {
+    }
+    throw new Error(`GitHub write failed: ${text}`);
+  }
+  const responseData = await res.json();
+  return responseData;
+}
+
+// src/exporter.ts
+init_logger();
+init_siyuan_api();
+init_cache_manager();
+init_hash_utils();
 function sanitizeName(name) {
   const cleaned = (name || "").replace(/[<>:"/\\|?*]/g, "_").trim();
   return cleaned.length > 0 ? cleaned : "untitled";
@@ -718,7 +941,7 @@ async function fetchDocRecord(docId) {
   }
   return { info: blk ?? null, usedId: docId };
 }
-async function exportCurrentDocToGit(plugin, docId, blockId, settings, onProgress) {
+async function exportCurrentDocToGit(plugin, docId, blockId, settings, onProgress, skipAssets = false) {
   await logInfo(`Export start, docId=${docId}, blockId=${blockId}`);
   onProgress?.("Resolving document ID...");
   const resolvedDocId = await resolveDocId(docId, blockId);
@@ -766,7 +989,12 @@ async function exportCurrentDocToGit(plugin, docId, blockId, settings, onProgres
     onProgress?.(`Skipped (ignored by ${ignoreResult.reason})`);
     return;
   }
-  const filePath = joinPath(settings.exportRoot, notebookName, ...hpathParts, `${title}.md`);
+  const filePath = joinPath(
+    settings.exportRoot,
+    sanitizeName(notebookName),
+    ...hpathParts.map((p) => sanitizeName(p)),
+    `${sanitizeName(title)}.md`
+  );
   onProgress?.("Exporting markdown...");
   const markdownRaw = await exportMarkdown(docId);
   let markdown = markdownRaw.content || "";
@@ -798,50 +1026,68 @@ async function exportCurrentDocToGit(plugin, docId, blockId, settings, onProgres
     },
     markdown
   );
-  await updateDocCacheEntry(plugin, info.box, usedId, {
+  await logInfo(`[GitHub] Upload response: ${JSON.stringify(uploadResult).substring(0, 200)}`);
+  let githubSHA;
+  if (uploadResult && uploadResult.content && uploadResult.content.sha) {
+    githubSHA = uploadResult.content.sha;
+  } else if (uploadResult && uploadResult.sha) {
+    githubSHA = uploadResult.sha;
+  } else {
+    await logError(`[GitHub] Invalid response structure: ${JSON.stringify(uploadResult)}`);
+    throw new Error(`GitHub upload failed: no SHA returned for ${filePath}`);
+  }
+  await logInfo(`[GitHub] File uploaded, SHA: ${githubSHA}`);
+  const cacheEntry = {
     docId: usedId,
     notebookId: info.box,
     githubPath: filePath,
     contentHash,
-    githubSHA: uploadResult?.content?.sha || "unknown",
+    githubSHA,
     lastSyncTime: Date.now(),
     siyuanUpdated: info.updated || Date.now()
-  });
-  let assets = [];
-  if (settings.exportAllAssets) {
-    onProgress?.("Collecting all assets...");
-    assets = (await listAllAssets()).map((a) => a.replace(/^assets\//, ""));
-  } else {
-    onProgress?.("Collecting referenced assets...");
-    assets = collectAssetPathsFromMarkdown(markdown).map((a) => a.replace(/^assets\//, ""));
-  }
-  if (assets.length > 0) {
-    for (let i = 0; i < assets.length; i++) {
-      const asset = assets[i];
-      onProgress?.(`Uploading asset ${i + 1}/${assets.length}: ${asset.split("/").pop()}...`);
-      const normalized = asset.replace(/^assets\//, "");
-      const assetPath = joinPath(settings.exportRoot, assetsDir, normalized);
-      const blob = await getFileBlob(`data/assets/${normalized}`);
-      if (!blob) {
-        continue;
-      }
-      const buffer = await blob.arrayBuffer();
-      await createOrUpdateBinaryFile(
-        {
-          owner: repo.owner,
-          repo: repo.repo,
-          branch: settings.branch,
-          token: settings.token,
-          path: assetPath,
-          contentBase64: "",
-          message: `Export asset ${asset}`
-        },
-        buffer
-      );
+  };
+  await logInfo(`[Exporter] About to update cache with entry: ${JSON.stringify(cacheEntry)}`);
+  await updateDocCacheEntry(plugin, info.box, usedId, cacheEntry);
+  if (!skipAssets) {
+    let assets = [];
+    if (settings.exportAllAssets) {
+      onProgress?.("Collecting all assets...");
+      assets = (await listAllAssets()).map((a) => a.replace(/^assets\//, ""));
+    } else {
+      onProgress?.("Collecting referenced assets...");
+      assets = collectAssetPathsFromMarkdown(markdown).map((a) => a.replace(/^assets\//, ""));
     }
+    if (assets.length > 0) {
+      for (let i = 0; i < assets.length; i++) {
+        const asset = assets[i];
+        onProgress?.(`Uploading asset ${i + 1}/${assets.length}: ${asset.split("/").pop()}...`);
+        const normalized = asset.replace(/^assets\//, "");
+        const assetPath = joinPath(settings.exportRoot, assetsDir, normalized);
+        const blob = await getFileBlob(`data/assets/${normalized}`);
+        if (!blob) {
+          continue;
+        }
+        const buffer = await blob.arrayBuffer();
+        await createOrUpdateBinaryFile(
+          {
+            owner: repo.owner,
+            repo: repo.repo,
+            branch: settings.branch,
+            token: settings.token,
+            path: assetPath,
+            contentBase64: "",
+            message: `Export asset ${asset}`
+          },
+          buffer
+        );
+      }
+    }
+    await logInfo(`Exported doc ${docId} to ${filePath}`);
+    onProgress?.(`Done: 1 doc, ${assets.length} asset${assets.length !== 1 ? "s" : ""}`);
+  } else {
+    await logInfo(`Exported doc ${docId} to ${filePath} (assets skipped - will sync separately)`);
+    onProgress?.("Document uploaded (assets will sync separately)");
   }
-  await logInfo(`Exported doc ${docId} to ${filePath}`);
-  onProgress?.(`Done: 1 doc, ${assets.length} asset${assets.length !== 1 ? "s" : ""}`);
 }
 
 // src/ui.ts
@@ -866,9 +1112,17 @@ function updateStatusBar(el, message) {
     return;
   }
   el.textContent = message;
+  void el.offsetHeight;
 }
 
+// src/index.ts
+init_logger();
+init_siyuan_api();
+
 // src/assets-sync.ts
+init_cache_manager();
+init_logger();
+init_hash_utils();
 async function getAllAssets() {
   await logInfo("[Assets] Scanning data/assets directory");
   const response = await fetch("/api/file/readDir", {
@@ -909,29 +1163,41 @@ async function readAssetFile(assetPath) {
 }
 async function uploadAssetWithCache(plugin, asset, settings, onProgress) {
   try {
-    onProgress?.(`Reading ${asset.path}...`);
+    const MAX_FILE_SIZE = 100 * 1024 * 1024;
+    if (asset.size > MAX_FILE_SIZE) {
+      const sizeMB2 = (asset.size / (1024 * 1024)).toFixed(2);
+      const msg = `[Skipped] ${asset.path} too large (${sizeMB2} MB > 100 MB limit)`;
+      onProgress?.(msg);
+      await logInfo(`[Assets] ${msg}`);
+      return false;
+    }
+    onProgress?.(`[Reading] ${asset.path} (${formatFileSize(asset.size)})`);
     const content = await readAssetFile(asset.path);
+    onProgress?.(`[Hashing] ${asset.path} (${formatFileSize(asset.size)})`);
     const contentHash = await calculateFileHash(content);
     const cached = await getAssetCacheEntry(plugin, asset.path);
     if (cached && cached.contentHash === contentHash) {
       onProgress?.(`[Cache Hit] ${asset.path} unchanged, skipping`);
       return false;
     }
-    onProgress?.(`[Uploading] ${asset.path} (${formatFileSize(asset.size)})`);
+    const sizeMB = (asset.size / (1024 * 1024)).toFixed(2);
+    onProgress?.(`[Uploading] ${asset.path} (${sizeMB} MB)`);
     const githubPath = `${settings.assetsDir}/${asset.path}`;
     const githubSHA = await uploadFileToGitHub(
       Buffer.from(content),
       githubPath,
       settings
     );
-    await updateAssetCacheEntry(plugin, asset.path, {
+    const cacheEntry = {
       assetPath: asset.path,
       contentHash,
       githubSHA,
       lastSyncTime: Date.now(),
       fileSize: asset.size
-    });
-    onProgress?.(`[Uploaded] ${asset.path}`);
+    };
+    await logInfo(`[Assets] About to update cache with entry: ${JSON.stringify(cacheEntry)}`);
+    await updateAssetCacheEntry(plugin, asset.path, cacheEntry);
+    onProgress?.(`[\u2713 Uploaded] ${asset.path} (${sizeMB} MB)`);
     return true;
   } catch (error) {
     onProgress?.(`[Error] ${asset.path}: ${error.message}`);
@@ -961,8 +1227,17 @@ async function uploadFileToGitHub(content, path, settings) {
     },
     content.buffer
   );
-  await logInfo(`[Assets] Upload completed: ${path}`);
-  return result?.content?.sha || "unknown";
+  let githubSHA;
+  if (result && result.content && result.content.sha) {
+    githubSHA = result.content.sha;
+  } else if (result && result.sha) {
+    githubSHA = result.sha;
+  } else {
+    await logError(`[Assets] Invalid GitHub response for ${path}: ${JSON.stringify(result).substring(0, 200)}`);
+    throw new Error(`GitHub upload failed: no SHA returned for ${path}`);
+  }
+  await logInfo(`[Assets] Upload completed: ${path}, SHA: ${githubSHA}`);
+  return githubSHA;
 }
 async function syncAllAssets(plugin, settings, onProgress) {
   const result = {
@@ -1013,26 +1288,458 @@ async function syncAllAssets(plugin, settings, onProgress) {
   }
 }
 
+// src/auto-sync-scheduler.ts
+init_logger();
+
+// src/incremental-sync.ts
+init_logger();
+init_cache_manager();
+init_cache_manager();
+async function getAllDocMetadata() {
+  await logInfo("[IncrementalSync] Fetching all document metadata");
+  const response = await fetch("/api/query/sql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      stmt: `SELECT id, box, path, hpath, content AS name, updated
+             FROM blocks
+             WHERE type = 'd'
+             ORDER BY updated DESC`
+    })
+  });
+  const result = await response.json();
+  if (result.code !== 0) {
+    await logError(`Failed to query documents: ${result.msg}`);
+    return [];
+  }
+  const docs = (result.data || []).filter((row) => {
+    if (!row.id || !row.box) return false;
+    if (row.box === "plugins") return false;
+    if (!row.updated || typeof row.updated !== "string") return false;
+    return true;
+  }).map((row) => ({
+    id: row.id,
+    box: row.box,
+    path: row.path,
+    hpath: row.hpath,
+    name: row.name,
+    updated: row.updated
+  }));
+  await logInfo(`[IncrementalSync] Found ${docs.length} documents`);
+  return docs;
+}
+async function getChangedDocuments(plugin, allDocs) {
+  const startTime = Date.now();
+  const changedDocs = [];
+  await logInfo(`[IncrementalSync] Scanning ${allDocs.length} documents for changes`);
+  for (const doc of allDocs) {
+    try {
+      const cached = await getDocCacheEntry(plugin, doc.box, doc.id);
+      if (!cached) {
+        changedDocs.push(doc);
+        await logInfo(`[IncrementalSync] New doc: ${doc.id}`);
+        continue;
+      }
+      if (doc.updated > cached.siyuanUpdated) {
+        changedDocs.push(doc);
+        let timeStr = "unknown";
+        if (doc.updated) {
+          try {
+            timeStr = new Date(doc.updated).toISOString();
+          } catch (e) {
+            timeStr = "invalid";
+          }
+        }
+        await logInfo(`[IncrementalSync] Modified doc: ${doc.id} (${timeStr})`);
+      }
+    } catch (error) {
+      await logError(`[IncrementalSync] Error checking doc ${doc.id}: ${error}`);
+      changedDocs.push(doc);
+    }
+  }
+  const scanTime = Date.now() - startTime;
+  await logInfo(
+    `[IncrementalSync] Scan complete: ${changedDocs.length}/${allDocs.length} changed (${scanTime}ms)`
+  );
+  return changedDocs;
+}
+async function getAllAssetMetadata() {
+  await logInfo("[IncrementalSync] Fetching all asset metadata");
+  const response = await fetch("/api/file/readDir", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: "/data/assets" })
+  });
+  const result = await response.json();
+  if (result.code !== 0) {
+    await logError(`Failed to read assets: ${result.msg}`);
+    return [];
+  }
+  const assets = (result.data || []).filter((file) => !file.isDir).map((file) => ({
+    path: file.name,
+    size: file.size || 0,
+    mtime: file.updated || Date.now()
+    // 文件修改时间
+  }));
+  await logInfo(`[IncrementalSync] Found ${assets.length} assets`);
+  return assets;
+}
+async function getChangedAssets(plugin, allAssets, lastSyncTime) {
+  const startTime = Date.now();
+  const changedAssets = [];
+  let lastSyncTimeStr = "never";
+  if (typeof lastSyncTime === "number" && lastSyncTime > 0 && !isNaN(lastSyncTime)) {
+    try {
+      lastSyncTimeStr = new Date(lastSyncTime).toISOString();
+    } catch (e) {
+      lastSyncTimeStr = "invalid";
+    }
+  }
+  await logInfo(`[IncrementalSync] Scanning ${allAssets.length} assets for changes since ${lastSyncTimeStr}`);
+  for (const asset of allAssets) {
+    try {
+      if (asset.mtime > lastSyncTime) {
+        changedAssets.push(asset);
+        await logInfo(`[IncrementalSync] Changed asset: ${asset.path}`);
+        continue;
+      }
+      const cached = await getAssetCacheEntry(plugin, asset.path);
+      if (!cached) {
+        changedAssets.push(asset);
+        await logInfo(`[IncrementalSync] New asset: ${asset.path}`);
+      }
+    } catch (error) {
+      await logError(`[IncrementalSync] Error checking asset ${asset.path}: ${error}`);
+      changedAssets.push(asset);
+    }
+  }
+  const scanTime = Date.now() - startTime;
+  await logInfo(
+    `[IncrementalSync] Asset scan complete: ${changedAssets.length}/${allAssets.length} changed (${scanTime}ms)`
+  );
+  return changedAssets;
+}
+async function performIncrementalSync(plugin, settings, onProgress) {
+  const startTime = Date.now();
+  const result = {
+    docsScanned: 0,
+    docsChanged: 0,
+    docsUploaded: 0,
+    docsSkipped: 0,
+    docsFailed: 0,
+    assetsScanned: 0,
+    assetsChanged: 0,
+    assetsUploaded: 0,
+    assetsSkipped: 0,
+    assetsFailed: 0,
+    totalTime: 0,
+    errors: []
+  };
+  await logInfo("[IncrementalSync] Starting incremental sync");
+  onProgress?.("Starting incremental sync...");
+  try {
+    if (settings.autoSync.syncDocs) {
+      onProgress?.("[Step 1/6 Scan documents] Loading document metadata...");
+      const allDocs = await getAllDocMetadata();
+      result.docsScanned = allDocs.length;
+      await logInfo(`[IncrementalSync] Step 1/6: Scanned ${allDocs.length} documents`);
+      onProgress?.("[Step 2/6 Check changes] Comparing documents with cache...");
+      const changedDocs = await getChangedDocuments(plugin, allDocs);
+      result.docsChanged = changedDocs.length;
+      await logInfo(`[IncrementalSync] Step 2/6: Found ${changedDocs.length} changed documents`);
+      if (changedDocs.length > 0) {
+        onProgress?.(`[Step 3/6 Upload docs] Uploading ${changedDocs.length} documents...`);
+        for (let i = 0; i < changedDocs.length; i++) {
+          const doc = changedDocs[i];
+          try {
+            onProgress?.(`[Step 3/6] [${i + 1}/${changedDocs.length}] ${doc.name}`);
+            await exportCurrentDocToGit(
+              plugin,
+              doc.id,
+              doc.id,
+              settings,
+              (msg) => onProgress?.(`  ${msg}`),
+              true
+              // skipAssets = true
+            );
+            result.docsUploaded++;
+          } catch (error) {
+            result.docsFailed++;
+            result.errors.push({
+              path: `doc:${doc.id}`,
+              error: error.message || String(error)
+            });
+            await logError(`[IncrementalSync] Failed to sync doc ${doc.id}: ${error}`);
+          }
+        }
+        await logInfo(`[IncrementalSync] Step 3/6: Uploaded ${result.docsUploaded}/${changedDocs.length} documents`);
+      } else {
+        onProgress?.("[Step 3/6 Upload docs] No documents to upload");
+        await logInfo("[IncrementalSync] Step 3/6: No document changes detected");
+      }
+    } else {
+      onProgress?.("[Step 1-3/6] Document sync disabled");
+      await logInfo("[IncrementalSync] Steps 1-3/6: Document sync disabled in settings");
+    }
+    if (settings.autoSync.syncAssets) {
+      onProgress?.("[Step 4/6 Scan assets] Loading asset metadata...");
+      const allAssets = await getAllAssetMetadata();
+      result.assetsScanned = allAssets.length;
+      await logInfo(`[IncrementalSync] Step 4/6: Scanned ${allAssets.length} assets`);
+      onProgress?.("[Step 5/6 Check changes] Comparing assets with cache...");
+      const lastAssetSyncTime = await getLastAssetSyncTime(plugin);
+      const changedAssets = await getChangedAssets(plugin, allAssets, lastAssetSyncTime);
+      result.assetsChanged = changedAssets.length;
+      await logInfo(`[IncrementalSync] Step 5/6: Found ${changedAssets.length} changed assets`);
+      if (changedAssets.length > 0) {
+        onProgress?.(`[Step 6/6 Upload assets] Uploading ${changedAssets.length} assets...`);
+        const CONCURRENCY = settings.autoSync.maxConcurrency || 5;
+        for (let i = 0; i < changedAssets.length; i += CONCURRENCY) {
+          const batch = changedAssets.slice(i, i + CONCURRENCY);
+          const batchResults = await Promise.allSettled(
+            batch.map((asset, idx) => {
+              onProgress?.(`[Step 6/6] [${i + idx + 1}/${changedAssets.length}] ${asset.path}`);
+              return uploadAssetWithCache(
+                plugin,
+                { path: asset.path, size: asset.size },
+                settings
+              );
+            })
+          );
+          for (let j = 0; j < batchResults.length; j++) {
+            const batchResult = batchResults[j];
+            const asset = batch[j];
+            if (batchResult.status === "fulfilled") {
+              if (batchResult.value) {
+                result.assetsUploaded++;
+              } else {
+                result.assetsSkipped++;
+              }
+            } else {
+              result.assetsFailed++;
+              result.errors.push({
+                path: `asset:${asset.path}`,
+                error: batchResult.reason?.message || "Unknown error"
+              });
+            }
+          }
+        }
+        await updateLastAssetSyncTime(plugin, Date.now());
+        await logInfo(`[IncrementalSync] Step 6/6: Uploaded ${result.assetsUploaded}/${changedAssets.length} assets`);
+      } else {
+        onProgress?.("[Step 6/6 Upload assets] No assets to upload");
+        await logInfo("[IncrementalSync] Step 6/6: No asset changes detected");
+      }
+    } else {
+      onProgress?.("[Step 4-6/6] Asset sync disabled");
+      await logInfo("[IncrementalSync] Steps 4-6/6: Asset sync disabled in settings");
+    }
+    result.totalTime = Date.now() - startTime;
+    await logInfo(
+      `[IncrementalSync] Complete: Docs(${result.docsUploaded}/${result.docsChanged}), Assets(${result.assetsUploaded}/${result.assetsChanged}), Time: ${result.totalTime}ms`
+    );
+    return result;
+  } catch (error) {
+    await logError(`[IncrementalSync] Sync failed: ${error}`);
+    throw error;
+  }
+}
+var LAST_ASSET_SYNC_KEY = "last-asset-sync-time";
+async function getLastAssetSyncTime(plugin) {
+  const time = await plugin.loadData(LAST_ASSET_SYNC_KEY);
+  return time || 0;
+}
+async function updateLastAssetSyncTime(plugin, time) {
+  await plugin.saveData(LAST_ASSET_SYNC_KEY, time);
+}
+
+// src/auto-sync-scheduler.ts
+var AutoSyncScheduler = class _AutoSyncScheduler {
+  constructor(plugin, settings, onProgress) {
+    this.timerId = null;
+    this.isRunning = false;
+    if (_AutoSyncScheduler.globalInstance) {
+      void _AutoSyncScheduler.globalInstance.stop();
+      _AutoSyncScheduler.globalInstance = null;
+    }
+    this.plugin = plugin;
+    this.settings = settings;
+    this.onProgress = onProgress;
+    _AutoSyncScheduler.globalInstance = this;
+  }
+  static {
+    this.globalInstance = null;
+  }
+  /**
+   * 启动自动同步
+   */
+  async start() {
+    if (!this.settings.autoSync.enabled) {
+      await logInfo("[AutoSync] Auto sync is disabled");
+      return;
+    }
+    if (this.timerId) {
+      await logInfo("[AutoSync] Already running");
+      return;
+    }
+    const intervalMs = this.settings.autoSync.interval * 60 * 1e3;
+    await logInfo(`[AutoSync] Starting auto sync (interval: ${this.settings.autoSync.interval} minutes)`);
+    void this.runSync();
+    this.timerId = setInterval(() => {
+      void this.runSync();
+    }, intervalMs);
+    await logInfo("[AutoSync] Scheduler started");
+  }
+  /**
+   * 停止自动同步
+   */
+  async stop() {
+    if (this.timerId) {
+      clearInterval(this.timerId);
+      this.timerId = null;
+      await logInfo("[AutoSync] Scheduler stopped");
+    }
+  }
+  /**
+   * 强制停止同步（包括正在运行的任务）
+   */
+  async forceStop() {
+    await this.stop();
+    if (this.isRunning) {
+      await logInfo("[AutoSync] Force stopping running sync");
+      this.isRunning = false;
+    }
+  }
+  /**
+   * 获取同步状态
+   */
+  getIsRunning() {
+    return this.isRunning;
+  }
+  /**
+   * 执行一次同步
+   */
+  async runSync() {
+    if (this.isRunning) {
+      await logInfo("[AutoSync] Sync already running, skipping");
+      return;
+    }
+    this.isRunning = true;
+    try {
+      await logInfo("[AutoSync] Starting sync cycle");
+      this.onProgress?.("[AutoSync] Starting...");
+      const result = await performIncrementalSync(
+        this.plugin,
+        this.settings,
+        this.onProgress
+      );
+      await this.logSyncResult(result);
+      this.onProgress?.(this.formatSyncResult(result));
+    } catch (error) {
+      await logError(`[AutoSync] Sync failed: ${error}`);
+      this.onProgress?.(`[AutoSync] Failed: ${error.message}`);
+    } finally {
+      this.isRunning = false;
+    }
+  }
+  /**
+   * 更新配置
+   */
+  updateSettings(settings) {
+    this.settings = settings;
+  }
+  /**
+   * 重启调度器（配置变更后）
+   */
+  async restart() {
+    await this.stop();
+    await this.start();
+  }
+  /**
+   * 记录同步结果
+   */
+  async logSyncResult(result) {
+    await logInfo(
+      `[AutoSync] Sync complete:
+  Documents: ${result.docsUploaded} uploaded, ${result.docsSkipped} skipped, ${result.docsFailed} failed (${result.docsScanned} scanned, ${result.docsChanged} changed)
+  Assets: ${result.assetsUploaded} uploaded, ${result.assetsSkipped} skipped, ${result.assetsFailed} failed (${result.assetsScanned} scanned, ${result.assetsChanged} changed)
+  Time: ${(result.totalTime / 1e3).toFixed(1)}s`
+    );
+    if (result.errors.length > 0) {
+      await logError(`[AutoSync] ${result.errors.length} errors occurred:
+${result.errors.map((e) => `  ${e.path}: ${e.error}`).join("\n")}`);
+    }
+  }
+  /**
+   * 格式化同步结果（用于状态栏显示）
+   */
+  formatSyncResult(result) {
+    const docs = result.docsUploaded > 0 ? `${result.docsUploaded} docs` : "";
+    const assets = result.assetsUploaded > 0 ? `${result.assetsUploaded} assets` : "";
+    const parts = [docs, assets].filter(Boolean);
+    if (parts.length === 0) {
+      return "[AutoSync] No changes";
+    }
+    return `[AutoSync] Synced: ${parts.join(", ")} (${(result.totalTime / 1e3).toFixed(1)}s)`;
+  }
+  /**
+   * 获取调度器状态
+   */
+  isActive() {
+    return this.timerId !== null;
+  }
+  /**
+   * 手动触发一次同步
+   */
+  async triggerSync() {
+    await logInfo("[AutoSync] Manual sync triggered");
+    this.onProgress?.("[AutoSync] Manual sync...");
+    const result = await performIncrementalSync(
+      this.plugin,
+      this.settings,
+      this.onProgress
+    );
+    await this.logSyncResult(result);
+    return result;
+  }
+};
+
 // src/index.ts
 var LifeosSyncPlugin = class extends import_siyuan.Plugin {
   constructor() {
     super(...arguments);
     this.settings = null;
     this.statusBarEl = null;
+    this.autoSyncScheduler = null;
   }
   async onload() {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.2.0");
+    await logInfo("plugin loaded v0.3.3");
     this.statusBarEl = createStatusBar(this);
     this.addTopBar({
       icon: "iconSync",
       title: "LifeOS Sync",
       callback: (event) => this.openMenu(event)
     });
+    if (this.settings.autoSync.enabled) {
+      this.autoSyncScheduler = new AutoSyncScheduler(
+        this,
+        this.settings,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+      await this.autoSyncScheduler.start();
+      await logInfo("Auto sync scheduler started");
+    }
     await logInfo("plugin loaded");
   }
   async onunload() {
+    if (this.autoSyncScheduler) {
+      await this.autoSyncScheduler.stop();
+      this.autoSyncScheduler = null;
+    }
+    const { flushAllLogs: flushAllLogs2 } = await Promise.resolve().then(() => (init_logger(), logger_exports));
+    await flushAllLogs2();
     if (this.statusBarEl) {
       this.statusBarEl.remove();
       this.statusBarEl = null;
@@ -1055,6 +1762,29 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
         void this.syncAllAssets();
       }
     });
+    menu.addItem({
+      label: `Auto sync: ${this.settings?.autoSync.enabled ? "ON" : "OFF"}`,
+      icon: "iconRefresh",
+      click: () => {
+        void this.toggleAutoSync();
+      }
+    });
+    menu.addItem({
+      label: "\u{1F504} Clear cache & full sync",
+      icon: "iconTrashcan",
+      click: () => {
+        void this.clearCacheAndFullSync();
+      }
+    });
+    if (this.autoSyncScheduler?.getIsRunning()) {
+      menu.addItem({
+        label: "\u26A0\uFE0F Force Stop Sync",
+        icon: "iconClose",
+        click: () => {
+          void this.forceStopSync();
+        }
+      });
+    }
     menu.addItem({
       label: "Configure...",
       icon: "iconSettings",
@@ -1093,7 +1823,7 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.2.0</span>
+        <span style="opacity:0.6; font-size:12px;">v0.3.3</span>
       </div>
       <label class="b3-label">Repo URL
         <input class="b3-text-field fn__block" id="${dialogId}-repo" value="${s.repoUrl}">
@@ -1141,6 +1871,39 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
         </div>
       </label>
       <div class="fn__space"></div>
+      <h4 style="margin-top:16px;margin-bottom:8px;">Auto Sync</h4>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Enable auto sync
+            <div class="b3-label__text">Automatically sync changes to GitHub at regular intervals</div>
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-autosync" ${s.autoSync.enabled ? "checked" : ""}>
+        </div>
+      </label>
+      <label class="b3-label">Sync interval (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-interval" value="${s.autoSync.interval}" min="1" max="1440">
+      </label>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Sync documents
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-syncdocs" ${s.autoSync.syncDocs ? "checked" : ""}>
+        </div>
+      </label>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Sync assets
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-syncassets" ${s.autoSync.syncAssets ? "checked" : ""}>
+        </div>
+      </label>
+      <div class="fn__space"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
         <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
         <button class="b3-button b3-button--primary" id="${dialogId}-save">Save</button>
@@ -1153,6 +1916,7 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       overlay.remove();
     };
     const doSave = async () => {
+      const oldAutoSyncEnabled = this.settings.autoSync.enabled;
       this.settings = {
         ...s,
         repoUrl: (q(`#${dialogId}-repo`).value || "").trim(),
@@ -1164,9 +1928,34 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
         cleanFrontmatter: q(`#${dialogId}-cleanfm`).checked,
         ignoreNotebooks: (q(`#${dialogId}-ignb`).value || "").split(",").map((v) => v.trim()).filter(Boolean),
         ignorePaths: (q(`#${dialogId}-ignp`).value || "").split(",").map((v) => v.trim()).filter(Boolean),
-        ignoreTags: (q(`#${dialogId}-ignt`).value || "").split(",").map((v) => v.trim()).filter(Boolean)
+        ignoreTags: (q(`#${dialogId}-ignt`).value || "").split(",").map((v) => v.trim()).filter(Boolean),
+        autoSync: {
+          enabled: q(`#${dialogId}-autosync`).checked,
+          interval: parseInt(q(`#${dialogId}-interval`).value) || 30,
+          syncDocs: q(`#${dialogId}-syncdocs`).checked,
+          syncAssets: q(`#${dialogId}-syncassets`).checked,
+          onlyWhenIdle: false,
+          maxConcurrency: 5
+        }
       };
       await saveSettings(this, this.settings);
+      if (this.settings.autoSync.enabled !== oldAutoSyncEnabled || this.settings.autoSync.enabled) {
+        if (this.autoSyncScheduler) {
+          await this.autoSyncScheduler.stop();
+          this.autoSyncScheduler = null;
+        }
+        if (this.settings.autoSync.enabled) {
+          this.autoSyncScheduler = new AutoSyncScheduler(
+            this,
+            this.settings,
+            (message) => updateStatusBar(this.statusBarEl, message)
+          );
+          await this.autoSyncScheduler.start();
+        }
+      } else if (this.autoSyncScheduler) {
+        this.autoSyncScheduler.updateSettings(this.settings);
+        await this.autoSyncScheduler.restart();
+      }
       await logInfo("Settings saved");
       destroy();
     };
@@ -1219,6 +2008,61 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     } catch (err) {
       updateStatusBar(this.statusBarEl, "Assets sync: failed");
       await logError("[Assets] Assets sync failed", err);
+    }
+  }
+  async forceStopSync() {
+    if (this.autoSyncScheduler) {
+      await this.autoSyncScheduler.forceStop();
+      updateStatusBar(this.statusBarEl, "Sync force stopped");
+      await logInfo("Sync force stopped by user");
+    }
+  }
+  async clearCacheAndFullSync() {
+    try {
+      updateStatusBar(this.statusBarEl, "Clearing cache...");
+      await logInfo("[ClearCache] Starting to clear all cache");
+      const { clearAllCache: clearAllCache2 } = await Promise.resolve().then(() => (init_cache_manager(), cache_manager_exports));
+      await clearAllCache2(this);
+      await logInfo("[ClearCache] All cache cleared successfully");
+      updateStatusBar(this.statusBarEl, "Cache cleared. Starting full sync...");
+      if (this.autoSyncScheduler) {
+        await this.autoSyncScheduler.stop();
+        this.autoSyncScheduler = null;
+      }
+      this.autoSyncScheduler = new AutoSyncScheduler(
+        this,
+        this.settings,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+      await this.autoSyncScheduler.start();
+      await logInfo("[ClearCache] Full sync triggered");
+    } catch (error) {
+      await logError(`[ClearCache] Failed: ${error}`);
+      updateStatusBar(this.statusBarEl, `Clear cache failed: ${error.message}`);
+    }
+  }
+  async toggleAutoSync() {
+    if (!this.settings) {
+      return;
+    }
+    this.settings.autoSync.enabled = !this.settings.autoSync.enabled;
+    await saveSettings(this, this.settings);
+    if (this.settings.autoSync.enabled) {
+      this.autoSyncScheduler = new AutoSyncScheduler(
+        this,
+        this.settings,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+      await this.autoSyncScheduler.start();
+      await logInfo("Auto sync enabled");
+      updateStatusBar(this.statusBarEl, "Auto sync: ON");
+    } else {
+      if (this.autoSyncScheduler) {
+        await this.autoSyncScheduler.stop();
+        this.autoSyncScheduler = null;
+      }
+      await logInfo("Auto sync disabled");
+      updateStatusBar(this.statusBarEl, "Auto sync: OFF");
     }
   }
 };

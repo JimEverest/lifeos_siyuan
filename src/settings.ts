@@ -19,6 +19,14 @@ export const DEFAULT_SETTINGS: Settings = {
   ignoreNotebooks: [],
   ignorePaths: [],
   ignoreTags: [],
+  autoSync: {
+    enabled: false,              // 默认禁用自动同步
+    interval: 30,                // 默认30分钟
+    syncDocs: true,              // 同步文档
+    syncAssets: true,            // 同步资源
+    onlyWhenIdle: false,         // 不限制空闲时
+    maxConcurrency: 5            // 最大并发数
+  }
 };
 
 export async function loadSettings(plugin: Plugin): Promise<Settings> {

@@ -1,2 +1,6 @@
 node_modules
 *.log
+logs/lifeos_sync.log.txt
+logs/console.log.txt
+TECHNICAL-ARCHITECTURE 2.md
+TECHNICAL-ARCHITECTURE 1.md

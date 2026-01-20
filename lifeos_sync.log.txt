@@ -1,0 +1,151 @@
+{"code":404,"msg":"GetFileAttributesEx D:\\SIYUAN\\temp\\lifeos_sync.log: The system cannot find the file specified.","data":null}[2026-01-18T17:22:02.842Z] [INFO] [AutoSync] Starting auto sync (interval: 30 minutes)
+[2026-01-18T17:22:02.843Z] [INFO] [AutoSync] Starting sync cycle
+[2026-01-18T17:22:02.843Z] [INFO] [AutoSync] Scheduler started
+[2026-01-18T17:22:02.843Z] [INFO] [IncrementalSync] Starting incremental sync
+[2026-01-18T17:22:02.843Z] [INFO] Auto sync enabled
+[2026-01-18T17:22:02.843Z] [INFO] [IncrementalSync] Fetching all document metadata
+[2026-01-18T17:22:02.915Z] [INFO] [IncrementalSync] Found 64 documents
+[2026-01-18T17:22:02.915Z] [INFO] [IncrementalSync] Scanning 64 documents for changes
+[2026-01-18T17:22:02.918Z] [INFO] [Cache] Doc cache miss: GIT-SYNC-PLUGIN
+[2026-01-18T17:22:02.918Z] [INFO] [IncrementalSync] New doc: GIT-SYNC-PLUGIN
+[2026-01-18T17:22:02.933Z] [INFO] [Cache] Doc cache miss: 20260119005452-ikcm6s5
+[2026-01-18T17:22:02.933Z] [INFO] [IncrementalSync] New doc: 20260119005452-ikcm6s5
+[2026-01-18T17:22:02.935Z] [INFO] [Cache] Doc cache miss: 20260118234214-d857efm
+[2026-01-18T17:22:02.935Z] [INFO] [IncrementalSync] New doc: 20260118234214-d857efm
+[2026-01-18T17:22:02.937Z] [INFO] [Cache] Doc cache miss: 20260118212937-dh52f4u
+[2026-01-18T17:22:02.937Z] [INFO] [IncrementalSync] New doc: 20260118212937-dh52f4u
+[2026-01-18T17:22:02.941Z] [INFO] [Cache] Doc cache hit: 20241221133029-8eietj4
+[2026-01-18T17:22:02.952Z] [INFO] [Cache] Doc cache hit: 20260118105527-39km5u1
+[2026-01-18T17:22:02.953Z] [ERROR] [IncrementalSync] Error checking doc 20260118105527-39km5u1: RangeError: Invalid time value
+[2026-01-18T17:22:02.970Z] [INFO] [Cache] Doc cache hit: 20260116165343-o3bw1wp
+[2026-01-18T17:22:02.972Z] [INFO] [Cache] Doc cache hit: 20260116135804-qfn7arf
+[2026-01-18T17:22:02.976Z] [INFO] [Cache] Doc cache hit: 20260113110317-vg05nx6
+[2026-01-18T17:22:02.978Z] [INFO] [Cache] Doc cache hit: 20260114142434-kszw599
+[2026-01-18T17:22:02.981Z] [INFO] [Cache] Doc cache hit: 20260108143506-45mzfti
+[2026-01-18T17:22:02.984Z] [INFO] [Cache] Doc cache hit: 20260116073855-lhzoqjf
+[2026-01-18T17:22:02.989Z] [INFO] [Cache] Doc cache hit: 20260114220935-a3dkpmv
+[2026-01-18T17:22:02.991Z] [INFO] [Cache] Doc cache hit: 20250830210412-kzos5bh
+[2026-01-18T17:22:02.994Z] [INFO] [Cache] Doc cache hit: 20260115175838-qve9t9o
+[2026-01-18T17:22:02.997Z] [INFO] [Cache] Doc cache hit: 20260115171258-ylh7rm6
+[2026-01-18T17:22:03.000Z] [INFO] [Cache] Doc cache hit: 20260114221215-df62tye
+[2026-01-18T17:22:03.003Z] [INFO] [Cache] Doc cache hit: 20241223110542-76jfryw
+[2026-01-18T17:22:03.006Z] [INFO] [Cache] Doc cache hit: 20260115161715-5thxeag
+[2026-01-18T17:22:03.008Z] [INFO] [Cache] Doc cache hit: 20260114194755-fwx5kd5
+[2026-01-18T17:22:03.011Z] [INFO] [Cache] Doc cache hit: 20260114194452-wwbu3sw
+[2026-01-18T17:22:03.013Z] [INFO] [Cache] Doc cache hit: 20260114195222-1md2koc
+[2026-01-18T17:22:03.017Z] [INFO] [Cache] Doc cache hit: 20260114194933-ruq1crx
+[2026-01-18T17:22:03.021Z] [INFO] [Cache] Doc cache hit: 20260106204329-is3f3ly
+[2026-01-18T17:22:03.025Z] [INFO] [Cache] Doc cache hit: 20260113214854-mzyp6z7
+[2026-01-18T17:22:03.028Z] [INFO] [Cache] Doc cache hit: 20260112210850-r0lcmvy
+[2026-01-18T17:22:03.031Z] [INFO] [Cache] Doc cache hit: 20260113162019-2wsorni
+[2026-01-18T17:22:03.034Z] [INFO] [Cache] Doc cache hit: 20260113095655-iw8szz2
+[2026-01-18T17:22:03.038Z] [INFO] [Cache] Doc cache hit: 20251231113055-tkixw2h
+[2026-01-18T17:22:03.041Z] [INFO] [Cache] Doc cache hit: 20260112224644-x9j62m3
+[2026-01-18T17:22:03.044Z] [INFO] [Cache] Doc cache hit: 20260111121748-ywtp5kg
+[2026-01-18T17:22:03.047Z] [INFO] [Cache] Doc cache hit: 20260111191131-7x9e4xq
+[2026-01-18T17:22:03.050Z] [INFO] [Cache] Doc cache hit: 20250204102812-gx9jb7g
+[2026-01-18T17:22:03.052Z] [INFO] [Cache] Doc cache miss: examples
+[2026-01-18T17:22:03.052Z] [INFO] [IncrementalSync] New doc: examples
+[2026-01-18T17:22:03.055Z] [INFO] [Cache] Doc cache hit: 20260105234222-o0w2bq1
+[2026-01-18T17:22:03.059Z] [INFO] [Cache] Doc cache hit: 20260106142435-d32lgs8
+[2026-01-18T17:22:03.062Z] [INFO] [Cache] Doc cache hit: 20260108155959-z80ayhe
+[2026-01-18T17:22:03.065Z] [INFO] [Cache] Doc cache hit: 20260108082614-dpbnrf8
+[2026-01-18T17:22:03.069Z] [INFO] [Cache] Doc cache hit: 20260107222555-6ztqv1w
+[2026-01-18T17:22:03.071Z] [INFO] [Cache] Doc cache hit: 20260107105957-u093zfk
+[2026-01-18T17:22:03.074Z] [INFO] [Cache] Doc cache miss: 20260106104057-64q9hyh
+[2026-01-18T17:22:03.074Z] [INFO] [IncrementalSync] New doc: 20260106104057-64q9hyh
+[2026-01-18T17:22:03.076Z] [INFO] [Cache] Doc cache hit: 20260106201046-i3yt1bf
+[2026-01-18T17:22:03.079Z] [INFO] [Cache] Doc cache hit: 20260106200200-0psrmk9
+[2026-01-18T17:22:03.083Z] [INFO] [Cache] Doc cache hit: 20260106200551-7wxqjdi
+[2026-01-18T17:22:03.087Z] [INFO] [Cache] Doc cache hit: 20260106195415-vyi7yxt
+[2026-01-18T17:22:03.090Z] [INFO] [Cache] Doc cache hit: 20260106150148-itigh1n
+[2026-01-18T17:22:03.093Z] [INFO] [Cache] Doc cache hit: 20251215213040-ggtiflw
+[2026-01-18T17:22:03.096Z] [INFO] [Cache] Doc cache hit: 20250119222802-urzodfu
+[2026-01-18T17:22:03.098Z] [INFO] [Cache] Doc cache hit: 20260105172154-e1w9y68
+[2026-01-18T17:22:03.102Z] [INFO] [Cache] Doc cache hit: 20241221143918-byaz29q
+[2026-01-18T17:22:03.105Z] [INFO] [Cache] Doc cache hit: 20241221142743-9vw96jp
+[2026-01-18T17:22:03.107Z] [INFO] [Cache] Doc cache hit: 20250204102733-vhlul0t
+[2026-01-18T17:22:03.122Z] [INFO] [Cache] Doc cache hit: 20260104111820-imt85y4
+[2026-01-18T17:22:03.128Z] [INFO] [Cache] Doc cache hit: 20260104111820-vhfbq96
+[2026-01-18T17:22:03.131Z] [INFO] [Cache] Doc cache hit: 20251231113034-jmnpwy3
+[2026-01-18T17:22:03.135Z] [INFO] [Cache] Doc cache hit: 20251230174230-n08s4t1
+[2026-01-18T17:22:03.138Z] [INFO] [Cache] Doc cache hit: 20251230174229-4jinc2u
+[2026-01-18T17:22:03.141Z] [INFO] [Cache] Doc cache hit: 20251230174227-a4sq925
+[2026-01-18T17:22:03.143Z] [INFO] [Cache] Doc cache hit: 20251230174227-4rvfbuh
+[2026-01-18T17:22:03.146Z] [INFO] [Cache] Doc cache hit: 20251226101449-vzfbzfy
+[2026-01-18T17:22:03.152Z] [INFO] [Cache] Doc cache hit: 20251226191816-dizfcm0
+[2026-01-18T17:22:03.156Z] [INFO] [Cache] Doc cache hit: 20251229141231-j1jk8fn
+[2026-01-18T17:22:03.159Z] [INFO] [Cache] Doc cache hit: 20251229141230-a09km5i
+[2026-01-18T17:22:03.161Z] [INFO] [Cache] Doc cache hit: 20251229141230-m2977v1
+[2026-01-18T17:22:03.161Z] [INFO] [IncrementalSync] Scan complete: 8/64 changed (318ms)
+[2026-01-18T17:22:03.161Z] [INFO] [IncrementalSync] Fetching all document metadata
+[2026-01-18T17:22:03.223Z] [INFO] [IncrementalSync] Found 64 documents
+[2026-01-18T17:22:03.223Z] [INFO] Export start, docId=GIT-SYNC-PLUGIN, blockId=GIT-SYNC-PLUGIN
+[2026-01-18T17:22:03.225Z] [INFO] Doc info: usedId=GIT-SYNC-PLUGIN, box=plugins, hpath=/Untitled, name=, content=Untitled
+[2026-01-18T17:22:03.230Z] [ERROR] [IncrementalSync] Failed to sync doc GIT-SYNC-PLUGIN: Error: invalid ID argument
+[2026-01-18T17:22:03.230Z] [INFO] Export start, docId=20260119005452-ikcm6s5, blockId=20260119005452-ikcm6s5
+[2026-01-18T17:22:03.235Z] [INFO] Doc info: usedId=20260119005452-ikcm6s5, box=20250105191228-0txsps3, hpath=/富文本格式 --> Markdown, name=, content=富文本格式 --> Markdown
+[2026-01-18T17:22:03.246Z] [INFO] [Cache] Doc cache miss: 20260119005452-ikcm6s5
+[2026-01-18T17:22:05.929Z] [INFO] [GitHub] Upload response: {"content":{"name":"富文本格式 --_ Markdown.md","path":"IT/富文本格式 --_ Markdown.md","sha":"249583c2c555fb52ced17ad0892df7cd3694a674","size":20128,"url":"https://api.github.com/repos/JimEverest/Notes/contents
+[2026-01-18T17:22:05.929Z] [INFO] [GitHub] File uploaded, SHA: 249583c2c555fb52ced17ad0892df7cd3694a674
+[2026-01-18T17:22:05.929Z] [INFO] [Exporter] About to update cache with entry: {"docId":"20260119005452-ikcm6s5","notebookId":"20250105191228-0txsps3","githubPath":"IT/富文本格式 --_ Markdown.md","contentHash":"000324c6723c7b36890ece2c9333a5f4ecbf283f1d1c108fb179fc04b9c1f50b","githubSHA":"249583c2c555fb52ced17ad0892df7cd3694a674","lastSyncTime":1768756925929,"siyuanUpdated":"20260119005556"}
+[2026-01-18T17:22:05.929Z] [INFO] [Cache] Updating doc cache: 20260119005452-ikcm6s5 -> IT/富文本格式 --_ Markdown.md
+[2026-01-18T17:22:05.929Z] [INFO] [Cache] Entry data: {"docId":"20260119005452-ikcm6s5","notebookId":"20250105191228-0txsps3","githubPath":"IT/富文本格式 --_ Markdown.md","contentHash":"000324c6723c7b36890ece2c9333a5f4ecbf283f1d1c108fb179fc04b9c1f50b","githubSHA":"249583c2c555fb52ced17ad0892df7cd3694a674","lastSyncTime":1768756925929,"siyuanUpdated":"20260119005556"}
+[2026-01-18T17:22:05.931Z] [INFO] [Cache] Saving to notebook-20250105191228-0txsps3-docs.json: {"20250830210412-kzos5bh":{"docId":"20250830210412-kzos5bh","notebookId":"20250105191228-0txsps3","githubPath":"IT/Claude Code (Router).md","contentHash":"ef938a7ff2a4b176fd07caddd1135fa908b4e9aa3320a88ac292d159f0b4af53","githubSHA":"unknown","lastSyncTime":1768711305733,"siyuanUpdated":"20260116082701"},"20250204102812-gx9jb7g":{"docId":"20250204102812-gx9jb7g","notebookId":"20250105191228-0txsps3","githubPath":"IT/GIT.md","contentHash":"b76abcc1faabc02493c561fd540586a3789dc999a4e435c71582ec322...
+[2026-01-18T17:22:05.939Z] [INFO] [Cache] Save completed for notebook-20250105191228-0txsps3-docs.json
+[2026-01-18T17:22:05.939Z] [INFO] Exported doc 20260119005452-ikcm6s5 to IT/富文本格式 --_ Markdown.md (assets skipped - will sync separately)
+[2026-01-18T17:22:05.939Z] [INFO] Export start, docId=20260118234214-d857efm, blockId=20260118234214-d857efm
+[2026-01-18T17:22:05.944Z] [INFO] Doc info: usedId=20260118234214-d857efm, box=20251008105403-79mwffe, hpath=/2026 SGP/SGP Hotel - Pullman, name=, content=SGP Hotel - Pullman
+[2026-01-18T17:22:05.959Z] [INFO] [Cache] Doc cache miss: 20260118234214-d857efm
+[2026-01-18T17:22:09.365Z] [INFO] [GitHub] Upload response: {"content":{"name":"SGP Hotel - Pullman.md","path":"Travel/2026 SGP/SGP Hotel - Pullman.md","sha":"0629b7fa613a76849d4c69f7089d83153b64b0d0","size":3407,"url":"https://api.github.com/repos/JimEverest/
+[2026-01-18T17:22:09.372Z] [INFO] [GitHub] File uploaded, SHA: 0629b7fa613a76849d4c69f7089d83153b64b0d0
+[2026-01-18T17:22:09.372Z] [INFO] [Exporter] About to update cache with entry: {"docId":"20260118234214-d857efm","notebookId":"20251008105403-79mwffe","githubPath":"Travel/2026 SGP/SGP Hotel - Pullman.md","contentHash":"bbd430370a6d0dc8711435c37c43a394592c53adb6c79432ff3d3d11517dfcdf","githubSHA":"0629b7fa613a76849d4c69f7089d83153b64b0d0","lastSyncTime":1768756929372,"siyuanUpdated":"20260119005104"}
+[2026-01-18T17:22:09.372Z] [INFO] [Cache] Updating doc cache: 20260118234214-d857efm -> Travel/2026 SGP/SGP Hotel - Pullman.md
+[2026-01-18T17:22:09.373Z] [INFO] [Cache] Entry data: {"docId":"20260118234214-d857efm","notebookId":"20251008105403-79mwffe","githubPath":"Travel/2026 SGP/SGP Hotel - Pullman.md","contentHash":"bbd430370a6d0dc8711435c37c43a394592c53adb6c79432ff3d3d11517dfcdf","githubSHA":"0629b7fa613a76849d4c69f7089d83153b64b0d0","lastSyncTime":1768756929372,"siyuanUpdated":"20260119005104"}
+[2026-01-18T17:22:09.375Z] [INFO] [Cache] Saving to notebook-20251008105403-79mwffe-docs.json: {"20260118234214-d857efm":{"docId":"20260118234214-d857efm","notebookId":"20251008105403-79mwffe","githubPath":"Travel/2026 SGP/SGP Hotel - Pullman.md","contentHash":"bbd430370a6d0dc8711435c37c43a394592c53adb6c79432ff3d3d11517dfcdf","githubSHA":"0629b7fa613a76849d4c69f7089d83153b64b0d0","lastSyncTime":1768756929372,"siyuanUpdated":"20260119005104"}}...
+[2026-01-18T17:22:09.383Z] [INFO] [Cache] Save completed for notebook-20251008105403-79mwffe-docs.json
+[2026-01-18T17:22:09.383Z] [INFO] Exported doc 20260118234214-d857efm to Travel/2026 SGP/SGP Hotel - Pullman.md (assets skipped - will sync separately)
+[2026-01-18T17:22:09.383Z] [INFO] Export start, docId=20260118212937-dh52f4u, blockId=20260118212937-dh52f4u
+[2026-01-18T17:22:09.386Z] [INFO] Doc info: usedId=20260118212937-dh52f4u, box=20251008105403-79mwffe, hpath=/2026 SGP, name=, content=2026 SGP
+[2026-01-18T17:22:09.398Z] [INFO] [Cache] Doc cache miss: 20260118212937-dh52f4u
+[2026-01-18T17:22:14.183Z] [INFO] [GitHub] Upload response: {"content":{"name":"2026 SGP.md","path":"Travel/2026 SGP.md","sha":"367e9398761db2ea8e35275ac92897510b4bcfb0","size":20870,"url":"https://api.github.com/repos/JimEverest/Notes/contents/Travel/2026%20S
+[2026-01-18T17:22:14.184Z] [INFO] [GitHub] File uploaded, SHA: 367e9398761db2ea8e35275ac92897510b4bcfb0
+[2026-01-18T17:22:14.184Z] [INFO] [Exporter] About to update cache with entry: {"docId":"20260118212937-dh52f4u","notebookId":"20251008105403-79mwffe","githubPath":"Travel/2026 SGP.md","contentHash":"06ed0c114a94ec9ad9d4a4cf7b74822504005584f644f4d4baf7eb99deb257e2","githubSHA":"367e9398761db2ea8e35275ac92897510b4bcfb0","lastSyncTime":1768756934184,"siyuanUpdated":"20260118213804"}
+[2026-01-18T17:22:14.184Z] [INFO] [Cache] Updating doc cache: 20260118212937-dh52f4u -> Travel/2026 SGP.md
+[2026-01-18T17:22:14.184Z] [INFO] [Cache] Entry data: {"docId":"20260118212937-dh52f4u","notebookId":"20251008105403-79mwffe","githubPath":"Travel/2026 SGP.md","contentHash":"06ed0c114a94ec9ad9d4a4cf7b74822504005584f644f4d4baf7eb99deb257e2","githubSHA":"367e9398761db2ea8e35275ac92897510b4bcfb0","lastSyncTime":1768756934184,"siyuanUpdated":"20260118213804"}
+[2026-01-18T17:22:14.190Z] [INFO] [Cache] Saving to notebook-20251008105403-79mwffe-docs.json: {"20260118234214-d857efm":{"docId":"20260118234214-d857efm","notebookId":"20251008105403-79mwffe","githubPath":"Travel/2026 SGP/SGP Hotel - Pullman.md","contentHash":"bbd430370a6d0dc8711435c37c43a394592c53adb6c79432ff3d3d11517dfcdf","githubSHA":"0629b7fa613a76849d4c69f7089d83153b64b0d0","lastSyncTime":1768756929372,"siyuanUpdated":"20260119005104"},"20260118212937-dh52f4u":{"docId":"20260118212937-dh52f4u","notebookId":"20251008105403-79mwffe","githubPath":"Travel/2026 SGP.md","contentHash":"06e...
+[2026-01-18T17:22:14.195Z] [INFO] [Cache] Save completed for notebook-20251008105403-79mwffe-docs.json
+[2026-01-18T17:22:14.195Z] [INFO] Exported doc 20260118212937-dh52f4u to Travel/2026 SGP.md (assets skipped - will sync separately)
+[2026-01-18T17:22:14.195Z] [INFO] Export start, docId=20260118105527-39km5u1, blockId=20260118105527-39km5u1
+[2026-01-18T17:22:14.198Z] [INFO] Doc info: usedId=20260118105527-39km5u1, box=20260118105524-zqrz006, hpath=/Untitled, name=, content=Untitled
+[2026-01-18T17:22:14.221Z] [INFO] [Cache] Doc cache hit: 20260118105527-39km5u1
+[2026-01-18T17:22:17.318Z] [INFO] [GitHub] Upload response: {"content":{"name":"Untitled.md","path":"Health/Untitled.md","sha":"2bd15b5998cb1c99b1875b87e9f37d264df15061","size":9113,"url":"https://api.github.com/repos/JimEverest/Notes/contents/Health/Untitled.
+[2026-01-18T17:22:17.318Z] [INFO] [GitHub] File uploaded, SHA: 2bd15b5998cb1c99b1875b87e9f37d264df15061
+[2026-01-18T17:22:17.319Z] [INFO] [Exporter] About to update cache with entry: {"docId":"20260118105527-39km5u1","notebookId":"20260118105524-zqrz006","githubPath":"Health/Untitled.md","contentHash":"e792031ab4229ba635c4fca92d0080de5dd5dcf7a1df294175a3baa9ec9758ff","githubSHA":"2bd15b5998cb1c99b1875b87e9f37d264df15061","lastSyncTime":1768756937319,"siyuanUpdated":"20260118135355"}
+[2026-01-18T17:22:17.319Z] [INFO] [Cache] Updating doc cache: 20260118105527-39km5u1 -> Health/Untitled.md
+[2026-01-18T17:22:17.319Z] [INFO] [Cache] Entry data: {"docId":"20260118105527-39km5u1","notebookId":"20260118105524-zqrz006","githubPath":"Health/Untitled.md","contentHash":"e792031ab4229ba635c4fca92d0080de5dd5dcf7a1df294175a3baa9ec9758ff","githubSHA":"2bd15b5998cb1c99b1875b87e9f37d264df15061","lastSyncTime":1768756937319,"siyuanUpdated":"20260118135355"}
+[2026-01-18T17:22:17.321Z] [INFO] [Cache] Saving to notebook-20260118105524-zqrz006-docs.json: {"20260118105527-39km5u1":{"docId":"20260118105527-39km5u1","notebookId":"20260118105524-zqrz006","githubPath":"Health/Untitled.md","contentHash":"e792031ab4229ba635c4fca92d0080de5dd5dcf7a1df294175a3baa9ec9758ff","githubSHA":"2bd15b5998cb1c99b1875b87e9f37d264df15061","lastSyncTime":1768756937319,"siyuanUpdated":"20260118135355"}}...
+[2026-01-18T17:22:17.327Z] [INFO] [Cache] Save completed for notebook-20260118105524-zqrz006-docs.json
+[2026-01-18T17:22:17.327Z] [INFO] Exported doc 20260118105527-39km5u1 to Health/Untitled.md (assets skipped - will sync separately)
+[2026-01-18T17:22:17.327Z] [INFO] Export start, docId=20260118105527-39km5u1, blockId=20260118105527-39km5u1
+[2026-01-18T17:22:17.330Z] [INFO] Doc info: usedId=20260118105527-39km5u1, box=20260118105524-zqrz006, hpath=/Untitled, name=, content=Untitled
+[2026-01-18T17:22:17.344Z] [INFO] [Cache] Doc cache hit: 20260118105527-39km5u1
+[2026-01-18T17:22:17.345Z] [INFO] [Cache] Doc content unchanged, skipping upload: 20260118105527-39km5u1
+[2026-01-18T17:22:17.345Z] [INFO] Export start, docId=examples, blockId=examples
+[2026-01-18T17:22:17.348Z] [INFO] Doc info: usedId=examples, box=plugins, hpath=/Untitled/Untitled, name=, content=Untitled
+[2026-01-18T17:22:17.353Z] [ERROR] [IncrementalSync] Failed to sync doc examples: Error: invalid ID argument
+[2026-01-18T17:22:17.353Z] [INFO] Export start, docId=20260106104057-64q9hyh, blockId=20260106104057-64q9hyh
+[2026-01-18T17:22:17.357Z] [INFO] Doc info: usedId=20260106104057-64q9hyh, box=20250430121933-dpn3qch, hpath=/CCASS requirements, name=, content=CCASS requirements
+[2026-01-18T17:22:17.379Z] [INFO] [Cache] Doc cache miss: 20260106104057-64q9hyh
+[2026-01-18T17:22:20.719Z] [INFO] [GitHub] Upload response: {"content":{"name":"CCASS requirements.md","path":"ET-AI/CCASS requirements.md","sha":"d0c9c61adb835f71d03f0dddf6e47ddfd049c636","size":470,"url":"https://api.github.com/repos/JimEverest/Notes/content
+[2026-01-18T17:22:20.719Z] [INFO] [GitHub] File uploaded, SHA: d0c9c61adb835f71d03f0dddf6e47ddfd049c636
+[2026-01-18T17:22:20.719Z] [INFO] [Exporter] About to update cache with entry: {"docId":"20260106104057-64q9hyh","notebookId":"20250430121933-dpn3qch","githubPath":"ET-AI/CCASS requirements.md","contentHash":"b199404b335e4475c873403f8cc73c116201792b7d7b934cce1130d85938333a","githubSHA":"d0c9c61adb835f71d03f0dddf6e47ddfd049c636","lastSyncTime":1768756940719,"siyuanUpdated":"20260106202625"}
+[2026-01-18T17:22:20.719Z] [INFO] [Cache] Updating doc cache: 20260106104057-64q9hyh -> ET-AI/CCASS requirements.md
+[2026-01-18T17:22:20.720Z] [INFO] [Cache] Entry data: {"docId":"20260106104057-64q9hyh","notebookId":"20250430121933-dpn3qch","githubPath":"ET-AI/CCASS requirements.md","contentHash":"b199404b335e4475c873403f8cc73c116201792b7d7b934cce1130d85938333a","githubSHA":"d0c9c61adb835f71d03f0dddf6e47ddfd049c636","lastSyncTime":1768756940719,"siyuanUpdated":"20260106202625"}
+[2026-01-18T17:22:20.722Z] [INFO] [Cache] Saving to notebook-20250430121933-dpn3qch-docs.json: {"20260116165343-o3bw1wp":{"docId":"20260116165343-o3bw1wp","notebookId":"20250430121933-dpn3qch","githubPath":"ET-AI/pay-recommen.md","contentHash":"2b67e25696a775e1303787001279e87a7397ad0ce116b7b52af7a8b152f0450f","githubSHA":"unknown","lastSyncTime":1768711229762,"siyuanUpdated":"20260116165430"},"20260116135804-qfn7arf":{"docId":"20260116135804-qfn7arf","notebookId":"20250430121933-dpn3qch","githubPath":"ET-AI/perf-metric.md","contentHash":"c9477001a138e5ace932e3c547f0b6d3a546adc91a2e361e6ce...
+[2026-01-18T17:22:20.728Z] [INFO] [Cache] Save completed for notebook-20250430121933-dpn3qch-docs.json
+[2026-01-18T17:22:20.728Z] [INFO] Exported doc 20260106104057-64q9hyh to ET-AI/CCASS requirements.md (assets skipped - will sync separately)
+[2026-01-18T17:22:20.739Z] [INFO] [IncrementalSync] Fetching all asset metadata
+[2026-01-18T17:22:20.773Z] [INFO] [IncrementalSync] Found 2454 assets
+[2026-01-18T17:22:20.773Z] [ERROR] [IncrementalSync] Sync failed: RangeError: Invalid time value
+[2026-01-18T17:22:20.773Z] [ERROR] [AutoSync] Sync failed: RangeError: Invalid time value

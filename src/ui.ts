@@ -25,4 +25,7 @@ export function updateStatusBar(el: HTMLElement | null, message: string): void {
     return;
   }
   el.textContent = message;
+
+  // Force a repaint to ensure immediate update
+  void el.offsetHeight;
 }

@@ -7,15 +7,17 @@ import { initLogger, logError, logInfo } from "./logger";
 import type { Settings } from "./types";
 import { getActiveDocRefFromDOM } from "./siyuan-api";
 import { syncAllAssets } from "./assets-sync";
+import { AutoSyncScheduler } from "./auto-sync-scheduler";
 
 export default class LifeosSyncPlugin extends Plugin {
   private settings: Settings | null = null;
   private statusBarEl: HTMLElement | null = null;
+  private autoSyncScheduler: AutoSyncScheduler | null = null;
 
   async onload(): Promise<void> {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.2.0");
+    await logInfo("plugin loaded v0.3.3");
     this.statusBarEl = createStatusBar(this);
 
     this.addTopBar({
@@ -24,10 +26,31 @@ export default class LifeosSyncPlugin extends Plugin {
       callback: (event) => this.openMenu(event),
     });
 
+    // 启动自动同步调度器
+    if (this.settings.autoSync.enabled) {
+      this.autoSyncScheduler = new AutoSyncScheduler(
+        this,
+        this.settings,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+      await this.autoSyncScheduler.start();
+      await logInfo("Auto sync scheduler started");
+    }
+
     await logInfo("plugin loaded");
   }
 
   async onunload(): Promise<void> {
+    // 停止自动同步
+    if (this.autoSyncScheduler) {
+      await this.autoSyncScheduler.stop();
+      this.autoSyncScheduler = null;
+    }
+
+    // Flush所有待写入的日志
+    const { flushAllLogs } = await import("./logger");
+    await flushAllLogs();
+
     if (this.statusBarEl) {
       this.statusBarEl.remove();
       this.statusBarEl = null;
@@ -51,6 +74,30 @@ export default class LifeosSyncPlugin extends Plugin {
         void this.syncAllAssets();
       },
     });
+    menu.addItem({
+      label: `Auto sync: ${this.settings?.autoSync.enabled ? "ON" : "OFF"}`,
+      icon: "iconRefresh",
+      click: () => {
+        void this.toggleAutoSync();
+      },
+    });
+    menu.addItem({
+      label: "🔄 Clear cache & full sync",
+      icon: "iconTrashcan",
+      click: () => {
+        void this.clearCacheAndFullSync();
+      },
+    });
+    // 添加强制停止按钮（仅在同步运行时显示）
+    if (this.autoSyncScheduler?.getIsRunning()) {
+      menu.addItem({
+        label: "⚠️ Force Stop Sync",
+        icon: "iconClose",
+        click: () => {
+          void this.forceStopSync();
+        },
+      });
+    }
     menu.addItem({
       label: "Configure...",
       icon: "iconSettings",
@@ -93,7 +140,7 @@ export default class LifeosSyncPlugin extends Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.2.0</span>
+        <span style="opacity:0.6; font-size:12px;">v0.3.3</span>
       </div>
       <label class="b3-label">Repo URL
         <input class="b3-text-field fn__block" id="${dialogId}-repo" value="${s.repoUrl}">
@@ -141,6 +188,39 @@ export default class LifeosSyncPlugin extends Plugin {
         </div>
       </label>
       <div class="fn__space"></div>
+      <h4 style="margin-top:16px;margin-bottom:8px;">Auto Sync</h4>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Enable auto sync
+            <div class="b3-label__text">Automatically sync changes to GitHub at regular intervals</div>
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-autosync" ${s.autoSync.enabled ? "checked" : ""}>
+        </div>
+      </label>
+      <label class="b3-label">Sync interval (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-interval" value="${s.autoSync.interval}" min="1" max="1440">
+      </label>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Sync documents
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-syncdocs" ${s.autoSync.syncDocs ? "checked" : ""}>
+        </div>
+      </label>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Sync assets
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-syncassets" ${s.autoSync.syncAssets ? "checked" : ""}>
+        </div>
+      </label>
+      <div class="fn__space"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
         <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
         <button class="b3-button b3-button--primary" id="${dialogId}-save">Save</button>
@@ -155,6 +235,8 @@ export default class LifeosSyncPlugin extends Plugin {
     };
 
     const doSave = async () => {
+      const oldAutoSyncEnabled = this.settings.autoSync.enabled;
+
       this.settings = {
         ...s,
         repoUrl: (q(`#${dialogId}-repo`).value || "").trim(),
@@ -176,8 +258,38 @@ export default class LifeosSyncPlugin extends Plugin {
           .split(",")
           .map((v) => v.trim())
           .filter(Boolean),
+        autoSync: {
+          enabled: q(`#${dialogId}-autosync`).checked,
+          interval: parseInt(q(`#${dialogId}-interval`).value) || 30,
+          syncDocs: q(`#${dialogId}-syncdocs`).checked,
+          syncAssets: q(`#${dialogId}-syncassets`).checked,
+          onlyWhenIdle: false,
+          maxConcurrency: 5
+        }
       };
       await saveSettings(this, this.settings);
+
+      // 如果自动同步设置变化，重启调度器
+      if (this.settings.autoSync.enabled !== oldAutoSyncEnabled || this.settings.autoSync.enabled) {
+        if (this.autoSyncScheduler) {
+          await this.autoSyncScheduler.stop();
+          this.autoSyncScheduler = null;
+        }
+
+        if (this.settings.autoSync.enabled) {
+          this.autoSyncScheduler = new AutoSyncScheduler(
+            this,
+            this.settings,
+            (message) => updateStatusBar(this.statusBarEl, message)
+          );
+          await this.autoSyncScheduler.start();
+        }
+      } else if (this.autoSyncScheduler) {
+        // 更新现有调度器的设置
+        this.autoSyncScheduler.updateSettings(this.settings);
+        await this.autoSyncScheduler.restart();
+      }
+
       await logInfo("Settings saved");
       destroy();
     };
@@ -238,6 +350,76 @@ export default class LifeosSyncPlugin extends Plugin {
     } catch (err) {
       updateStatusBar(this.statusBarEl, "Assets sync: failed");
       await logError("[Assets] Assets sync failed", err);
+    }
+  }
+
+  private async forceStopSync(): Promise<void> {
+    if (this.autoSyncScheduler) {
+      await this.autoSyncScheduler.forceStop();
+      updateStatusBar(this.statusBarEl, "Sync force stopped");
+      await logInfo("Sync force stopped by user");
+    }
+  }
+
+  private async clearCacheAndFullSync(): Promise<void> {
+    try {
+      updateStatusBar(this.statusBarEl, "Clearing cache...");
+      await logInfo("[ClearCache] Starting to clear all cache");
+
+      // Import clearAllCache function
+      const { clearAllCache } = await import("./cache-manager");
+      await clearAllCache(this);
+
+      await logInfo("[ClearCache] All cache cleared successfully");
+      updateStatusBar(this.statusBarEl, "Cache cleared. Starting full sync...");
+
+      // Trigger a full sync by restarting auto sync scheduler
+      if (this.autoSyncScheduler) {
+        await this.autoSyncScheduler.stop();
+        this.autoSyncScheduler = null;
+      }
+
+      // Start a new sync
+      this.autoSyncScheduler = new AutoSyncScheduler(
+        this,
+        this.settings,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+      await this.autoSyncScheduler.start();
+      await logInfo("[ClearCache] Full sync triggered");
+
+    } catch (error) {
+      await logError(`[ClearCache] Failed: ${error}`);
+      updateStatusBar(this.statusBarEl, `Clear cache failed: ${error.message}`);
+    }
+  }
+
+  private async toggleAutoSync(): Promise<void> {
+    if (!this.settings) {
+      return;
+    }
+
+    this.settings.autoSync.enabled = !this.settings.autoSync.enabled;
+    await saveSettings(this, this.settings);
+
+    if (this.settings.autoSync.enabled) {
+      // 启动自动同步
+      this.autoSyncScheduler = new AutoSyncScheduler(
+        this,
+        this.settings,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+      await this.autoSyncScheduler.start();
+      await logInfo("Auto sync enabled");
+      updateStatusBar(this.statusBarEl, "Auto sync: ON");
+    } else {
+      // 停止自动同步
+      if (this.autoSyncScheduler) {
+        await this.autoSyncScheduler.stop();
+        this.autoSyncScheduler = null;
+      }
+      await logInfo("Auto sync disabled");
+      updateStatusBar(this.statusBarEl, "Auto sync: OFF");
     }
   }
 }

@@ -111,7 +111,11 @@ export async function saveNotebookDocCache(
   cache: NotebookDocCache
 ): Promise<void> {
   const cacheFile = getNotebookCacheFile(notebookId);
+  // Debug: Log what we're about to save
+  const preview = JSON.stringify(cache).substring(0, 500);
+  await logInfo(`[Cache] Saving to ${cacheFile}: ${preview}...`);
   await plugin.saveData(cacheFile, cache);
+  await logInfo(`[Cache] Save completed for ${cacheFile}`);
 }
 
 /**
@@ -142,6 +146,8 @@ export async function updateDocCacheEntry(
   entry: DocCacheEntry
 ): Promise<void> {
   await logInfo(`[Cache] Updating doc cache: ${docId} -> ${entry.githubPath}`);
+  // Debug: Log the exact entry object being saved
+  await logInfo(`[Cache] Entry data: ${JSON.stringify(entry)}`);
   const cache = await loadNotebookDocCache(plugin, notebookId);
   cache[docId] = entry;
   await saveNotebookDocCache(plugin, notebookId, cache);
@@ -291,4 +297,28 @@ export async function clearAllAssetCache(plugin: Plugin): Promise<void> {
     const cacheFile = `assets-${shard}.json`;
     await plugin.removeData(cacheFile);
   }
+}
+
+/**
+ * Clear ALL cache (documents, assets, and sync meta)
+ * Use this for a fresh full sync
+ */
+export async function clearAllCache(plugin: Plugin): Promise<void> {
+  // Clear sync meta to get list of notebooks
+  const meta = await loadSyncMeta(plugin);
+
+  // Clear all notebook document caches
+  for (const notebookId of Object.keys(meta.notebooks)) {
+    const cacheFile = getNotebookCacheFile(notebookId);
+    await plugin.removeData(cacheFile);
+  }
+
+  // Clear all asset caches
+  await clearAllAssetCache(plugin);
+
+  // Clear sync meta
+  await plugin.removeData(SYNC_META_FILE);
+
+  // Clear last asset sync time
+  await plugin.removeData("last-asset-sync-time");
 }
