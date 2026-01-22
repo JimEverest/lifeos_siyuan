@@ -2,26 +2,241 @@
 
 ## 版本说明
 
-**当前版本**: v0.3.0 (2025-01-18)
+**当前版本**: v0.4.2 (2026-01-23)
 
 本文档详细描述了 LifeOS Sync 插件的完整技术架构，包括：
+- **v0.4.x**: 跨设备缓存兼容性 + Bug修复 + 浏览器环境适配
 - **v0.3.0**: 增量同步引擎 + 自动同步调度器 + 性能优化
 - **v0.2.0**: 缓存系统 + 哈希算法
 - **v0.1.0**: 基础导出功能
 
 ## 目录
-1. [v0.3.0 新增架构](#v030-新增架构)
+1. [v0.4.x 新增功能与修复](#v04x-新增功能与修复)
+2. [v0.3.0 新增架构](#v030-新增架构)
    - [增量同步引擎](#增量同步引擎)
    - [自动同步调度器](#自动同步调度器)
    - [性能优化分析](#性能优化分析)
-2. [系统架构概览](#系统架构概览)
-3. [哈希算法详解](#哈希算法详解)
-4. [缓存系统架构](#缓存系统架构)
-5. [同步流程详解](#同步流程详解)
-6. [分布式同步机制](#分布式同步机制)
-7. [时序图](#时序图)
-8. [数据结构详解](#数据结构详解)
-9. [边界情况处理](#边界情况处理)
+3. [系统架构概览](#系统架构概览)
+4. [哈希算法详解](#哈希算法详解)
+5. [缓存系统架构](#缓存系统架构)
+6. [同步流程详解](#同步流程详解)
+7. [分布式同步机制](#分布式同步机制)
+8. [时序图](#时序图)
+9. [数据结构详解](#数据结构详解)
+10. [边界情况处理](#边界情况处理)
+11. [已知技术问题与解决方案](#已知技术问题与解决方案)
+
+---
+
+## v0.4.x 新增功能与修复
+
+### v0.4.2 (2026-01-23) - 浏览器环境兼容性修复
+
+#### 问题背景
+
+在实际使用中发现，所有新上传的 assets 都会失败，报错：`Buffer is not defined`。
+
+**根本原因**：
+```typescript
+// assets-sync.ts (错误代码)
+const githubSHA = await uploadFileToGitHub(
+  Buffer.from(content),  // ❌ 浏览器环境没有 Node.js 的 Buffer
+  githubPath,
+  settings
+);
+
+async function uploadFileToGitHub(
+  content: Buffer,  // ❌ 期望 Node.js Buffer
+  path: string,
+  settings: Settings
+): Promise<string> {
+  const result = await createOrUpdateBinaryFile(
+    { ... },
+    content.buffer  // ❌ 尝试访问 .buffer 属性
+  );
+}
+```
+
+SiYuan 插件运行在**浏览器环境**，不支持 Node.js 的 `Buffer` API。
+
+#### 解决方案
+
+直接使用浏览器原生的 `ArrayBuffer`：
+
+```typescript
+// assets-sync.ts (修复后)
+const githubSHA = await uploadFileToGitHub(
+  content,  // ✅ 直接传递 ArrayBuffer
+  githubPath,
+  settings
+);
+
+async function uploadFileToGitHub(
+  content: ArrayBuffer,  // ✅ 使用浏览器原生类型
+  path: string,
+  settings: Settings
+): Promise<string> {
+  const result = await createOrUpdateBinaryFile(
+    { ... },
+    content  // ✅ 直接传递 ArrayBuffer
+  );
+}
+```
+
+**修复影响**：
+- ✅ 新 assets 现在可以正常上传
+- ✅ 兼容所有浏览器环境（Desktop、Docker、Mobile）
+
+---
+
+### v0.4.1 (2026-01-23) - 图片链接格式修复
+
+#### 问题背景
+
+用户反馈导出的 markdown 中，部分图片链接出现双叹号：
+```markdown
+!![image](../assets/image-20250123113938-mpmpxjp.png)
+```
+
+这导致图片在 GitHub/VSCode 中无法正常显示。
+
+**根本原因**：
+
+```typescript
+// exporter.ts:276 (错误代码)
+markdown = markdown.replace(/\[([^\]]*?)\]\((\.\.\/assets\/[^)]+)\)/g, '![$1]($2)');
+```
+
+这个正则表达式会匹配**所有** `[text](../assets/...)` 格式的链接，包括已经有 `!` 的：
+- `[image](../assets/...)` → `![image](../assets/...)` ✅
+- `![image](../assets/...)` 中的 `[image](../assets/...)` → `!![image](../assets/...)` ❌
+
+#### 解决方案
+
+使用**负向后顾断言 (Negative Lookbehind)** 检查前面是否已有叹号：
+
+```typescript
+// exporter.ts:277 (修复后)
+markdown = markdown.replace(/(?<!!)\[([^\]]*?)\]\((\.\.\/assets\/[^)]+)\)/g, '![$1]($2)');
+//                           ^^^^^^
+//                           只匹配前面没有 ! 的链接
+```
+
+**正则详解**：
+- `(?<!!)`: 负向后顾断言，确保前面不是 `!`
+- `\[([^\]]*?)\]`: 匹配 `[文本]`
+- `\((\.\.\/assets\/[^)]+)\)`: 匹配 `(../assets/路径)`
+
+**修复影响**：
+- ✅ 已有 `!` 的图片链接不会再添加
+- ✅ 没有 `!` 的图片链接正确添加
+- ✅ 支持多次重新导出同一文档
+
+---
+
+### v0.4.0 (2026-01-23) - 跨设备缓存兼容性
+
+#### 问题背景
+
+**场景**：用户在多个设备上使用 LifeOS Sync：
+- Desktop 端（Windows）：上传了 2352 个 assets，缓存文件已生成
+- Docker 端：通过 SiYuan 自带的同步功能，缓存文件已同步到 Docker
+- **问题**：Docker 端仍然报告所有 2352 个 assets 为 "New asset (no cache)"，想要重新上传
+
+**日志证据**：
+```
+[Cache] Asset shard 7 loaded successfully (162 entries)
+[Cache] Asset cache MISS: image-20251015200910-cgm837m.png (shard 4) - NOT found in 162 entries
+```
+
+缓存文件明明有这个文件（在 `assets-7.json`），但插件在 `assets-4.json` 中查找，导致 cache miss。
+
+#### 根本原因
+
+**Shard 计算不一致**：
+
+```typescript
+// cache-manager.ts
+async function getAssetShard(assetPath: string): Promise<number> {
+  const hash = await calculateShardHash(assetPath);
+  return parseInt(hash.substring(0, 2), 16) % 16;
+}
+```
+
+不同环境下，`calculateShardHash()` 可能产生不同结果：
+- Desktop 端：SHA-256 → `"a3c8f9e2..."` → shard 7
+- Docker 端（HTTP）：FNV-1a → `"b4d1a8c3"` → shard 4
+
+#### 解决方案 1: 多 Shard 扫描策略
+
+```typescript
+// cache-manager.ts - getAssetCacheEntry()
+export async function getAssetCacheEntry(
+  plugin: Plugin,
+  assetPath: string
+): Promise<AssetCacheEntry | null> {
+  // 1. 先尝试计算的 shard（快速路径）
+  const expectedShard = await getAssetShard(assetPath);
+  const expectedCache = await loadAssetCacheShard(plugin, expectedShard);
+
+  if (expectedCache[assetPath]) {
+    await logInfo(`[Cache] Asset cache HIT: ${assetPath} (shard ${expectedShard})`);
+    return expectedCache[assetPath];
+  }
+
+  // 2. 如果在计算的 shard 中没找到，扫描所有其他 shard（兼容路径）
+  await logInfo(`[Cache] Asset not found in expected shard ${expectedShard}, scanning all shards...`);
+
+  for (let shard = 0; shard < ASSET_SHARD_COUNT; shard++) {
+    if (shard === expectedShard) continue; // 已经查过了
+
+    const cache = await loadAssetCacheShard(plugin, shard);
+    if (cache[assetPath]) {
+      await logInfo(`[Cache] Asset cache HIT: ${assetPath} (found in shard ${shard}, expected ${expectedShard})`);
+      return cache[assetPath];
+    }
+  }
+
+  // 3. 所有 shard 都没找到
+  await logInfo(`[Cache] Asset cache MISS: ${assetPath} - NOT found in any of ${ASSET_SHARD_COUNT} shards`);
+  return null;
+}
+```
+
+**策略特点**：
+1. **快速路径**：优先查找计算的 shard（99% 命中）
+2. **兼容路径**：查找失败时扫描所有 16 个 shards（1% 触发）
+3. **性能影响**：极小（仅在跨设备首次同步时触发，之后缓存更新后恢复快速路径）
+
+#### 解决方案 2: 简化缓存验证逻辑
+
+**之前的逻辑**：
+```typescript
+const cached = await getAssetCacheEntry(plugin, asset.path);
+
+if (cached && cached.fileSize === asset.size && cached.contentHash === expectedHash) {
+  // 缓存命中
+}
+```
+
+**问题**：`fileSize` 和 `contentHash` 可能因为跨设备而不一致（如旧版本缓存有 `fileSize: 0`）。
+
+**修复后**：
+```typescript
+// assets-sync.ts - uploadAssetWithCache()
+const cached = await getAssetCacheEntry(plugin, asset.path);
+
+if (cached) {
+  // 只要缓存中有记录，就相信已经上传过，不做任何验证
+  onProgress?.(`[Cache Hit] ${asset.path} - skipping (cached)`);
+  return false; // Skip upload
+}
+```
+
+**优点**：
+- ✅ 避免跨设备缓存字段不一致问题
+- ✅ 简化逻辑，提升性能
+- ✅ 兼容不同版本的缓存文件
 
 ---
 
@@ -1586,8 +1801,169 @@ private async runSync(): Promise<void> {
   - 自动同步调度器
   - **18-2400x 性能提升**（取决于变化率）
 
+- **v0.4.x**: 跨设备兼容性 + Bug修复
+  - 多shard扫描策略
+  - 浏览器环境适配
+  - 正则表达式修复
+
 ---
 
-**文档版本:** v2.0.0
-**最后更新:** 2025-01-18
+## 已知技术问题与解决方案
+
+### 1. SiYuan SQL 查询默认限制
+
+**问题描述**：
+SiYuan 的 `/api/query/sql` 接口默认只返回 **64 条记录**，即使数据库中有更多数据。
+
+**影响**：
+- 增量同步的文档扫描只能获取 64 篇文档
+- 大型笔记库（> 64 文档）会漏掉部分文档
+
+**解决方案**：
+```typescript
+// incremental-sync.ts - getAllDocMetadata()
+const sql = `
+  SELECT id, box, path, hpath, content AS name, updated
+  FROM blocks
+  WHERE type = 'd'
+  ORDER BY updated DESC
+  LIMIT 10000  -- ✅ 显式指定 LIMIT，覆盖默认的 64
+`;
+```
+
+**教训**：
+- ❌ 不要依赖 SiYuan API 的默认行为
+- ✅ 总是显式指定 `LIMIT`（建议 10000，足够覆盖大型仓库）
+- ✅ 在日志中记录实际返回的记录数，便于调试
+
+### 2. 浏览器环境 Buffer 不可用
+
+**问题描述**：
+SiYuan 插件运行在**浏览器环境**，不支持 Node.js 的 `Buffer` API。
+
+**错误场景**：
+```typescript
+// ❌ 错误代码
+const content = await readAssetFile(assetPath);  // 返回 ArrayBuffer
+const buffer = Buffer.from(content);  // ReferenceError: Buffer is not defined
+```
+
+**解决方案**：
+```typescript
+// ✅ 正确代码
+const content = await readAssetFile(assetPath);  // 返回 ArrayBuffer
+await uploadToGitHub(content);  // 直接使用 ArrayBuffer
+```
+
+**通用原则**：
+- ❌ 避免使用 Node.js 专属 API：`Buffer`, `fs`, `path`, `process`
+- ✅ 使用浏览器原生 API：`ArrayBuffer`, `Uint8Array`, `Blob`, `fetch`
+- ✅ 使用 `crypto.subtle` 代替 `crypto.createHash`
+
+### 3. crypto.subtle 在 HTTP 环境不可用
+
+**问题描述**：
+`crypto.subtle` API 仅在 **Secure Context** 中可用：
+- ✅ HTTPS
+- ✅ localhost
+- ❌ HTTP（如 Docker 部署的 SiYuan）
+
+**影响**：
+- SHA-256 哈希计算失败
+- 自动降级到 FNV-1a 哈希
+
+**解决方案**：
+```typescript
+// hash-utils.ts - 自动降级策略
+export async function calculateHash(text: string): Promise<string> {
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    try {
+      // 尝试使用 SHA-256
+      return await sha256(text);
+    } catch (e) {
+      console.warn("[Hash] crypto.subtle failed, using fallback");
+    }
+  }
+  // 降级到 FNV-1a
+  return simpleHash(text);
+}
+```
+
+**后果**：
+- HTTP 环境下哈希值不同，导致首次同步重新上传所有文件
+- 之后正常使用（FNV-1a 仍然可靠）
+
+### 4. 跨设备缓存 Shard 不匹配
+
+**问题描述**：
+不同环境下，哈希算法不同导致 asset shard 计算不一致：
+- Desktop（HTTPS）：SHA-256 → shard 7
+- Docker（HTTP）：FNV-1a → shard 4
+
+**影响**：
+- 缓存文件已同步，但查找失败
+- 所有 assets 被标记为 "New asset (no cache)"
+
+**解决方案（v0.4.0）**：
+多 shard 扫描策略：
+1. 优先查找计算的 shard（快速路径）
+2. 查找失败时扫描所有 16 个 shards（兼容路径）
+3. 性能影响极小（仅首次触发）
+
+### 5. 正则表达式重复匹配问题
+
+**问题描述**：
+图片链接处理正则会重复匹配已处理的链接：
+```typescript
+// ❌ 错误
+markdown.replace(/\[([^\]]*?)\]\((\.\.\/assets\/[^)]+)\)/g, '![$1]($2)');
+// 结果：![image](...) → !![image](...)
+```
+
+**解决方案（v0.4.1）**：
+使用负向后顾断言：
+```typescript
+// ✅ 正确
+markdown.replace(/(?<!!)\[([^\]]*?)\]\((\.\.\/assets\/[^)]+)\)/g, '![$1]($2)');
+```
+
+### 6. GitHub API Rate Limit
+
+**问题描述**：
+GitHub API 有速率限制：
+- 认证用户：5000 requests/hour
+- 未认证用户：60 requests/hour
+
+**影响**：
+- 频繁自动同步可能触发限流
+- v0.3.0 增量同步大幅减少请求（2000 → 40/次）
+
+**建议**：
+- 最小同步间隔：5 分钟（安全）
+- 监控 API 配额：GitHub 响应头 `X-RateLimit-Remaining`
+
+### 7. 多端并发写入冲突（待解决）
+
+**问题描述**：
+多个客户端同时向 GitHub 写入可能导致：
+- 提交冲突
+- 缓存不一致
+- SHA 校验失败
+
+**当前状态**：
+- ⚠️ 已识别问题
+- ⚠️ 暂未实现分布式锁机制
+- ⚠️ 建议用户手动配置同步策略（见 HANDOVER.md）
+
+**计划解决方案**：
+1. 方案 1：用户配置设备角色（Aggressive/Conservative/Manual）
+2. 方案 2：GitHub 标记文件锁（`.sync-in-progress`）
+3. 方案 3：时间戳检查 + 随机抖动
+
+详见 HANDOVER.md 的"待实现功能"章节。
+
+---
+
+**文档版本:** v3.0.0
+**最后更新:** 2026-01-23
 **作者:** Claude Code

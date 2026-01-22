@@ -144,9 +144,38 @@ The cache system is the **core technology** enabling high-performance auto-sync 
 
 ### 🚀 Version History
 
+- **v0.4.2** (2026-01-23):
+  - 🐛 Fixed `Buffer is not defined` error in browser environment (asset upload now works)
+  - 🐛 Fixed double exclamation mark in image links (`!![image]` → `![image]`)
+- **v0.4.1** (2026-01-23):
+  - 🐛 Fixed image link formatting with negative lookbehind regex
+  - 🔧 Multi-shard cache scanning for cross-device compatibility
+- **v0.4.0** (2026-01-23):
+  - 🚀 Multi-device cache compatibility: Scans all 16 asset shards when cache lookup fails
+  - ⚡ Simplified asset cache validation (filename-only check, no fileSize/contentHash verification)
+  - 🔧 Performance optimization: Cache check before file reading
 - **v0.3.0**: Auto-sync + incremental sync + performance optimizations
 - **v0.2.0**: Cache system + hash-based change detection
 - **v0.1.0**: Initial release with manual export
+
+### 🐛 Known Issues & Solutions
+
+#### Multi-Device Sync Cache Mismatch
+**Problem**: When syncing across multiple devices (Desktop, Docker, Mobile), asset cache shard calculation may differ due to environment variations, causing assets to be marked as "not cached" even though they exist in cache files.
+
+**Solution (v0.4.0+)**: The plugin now scans all 16 asset cache shards if the expected shard doesn't contain the entry. This ensures cross-device compatibility with minimal performance impact.
+
+#### SiYuan SQL Query Limit
+**Issue**: SiYuan's `/api/query/sql` returns only 64 records by default.
+
+**Workaround**: Always include explicit `LIMIT` in SQL queries (e.g., `LIMIT 10000` for large repositories). The plugin handles this internally for incremental sync.
+
+#### HTTP vs HTTPS Hash Algorithm
+**Behavior**:
+- HTTPS/localhost: Uses SHA-256 (64-char hash)
+- HTTP (Docker): Uses FNV-1a (8-char hash)
+
+**Impact**: Switching between HTTP/HTTPS environments will cause one-time cache invalidation and re-upload all files. After the first sync, cache works normally.
 
 ### 📄 License
 
