@@ -27,6 +27,25 @@ const SYNC_META_FILE = "sync-meta.json";
 const ASSET_SHARD_COUNT = 16; // Number of asset cache shards
 
 // ============================================================================
+// In-Memory Cache Layer
+// ============================================================================
+
+/**
+ * 内存缓存层，避免重复读取同一个缓存文件
+ * 注意：这些缓存在每次sync周期中有效，会在clearMemoryCache()中清空
+ */
+const notebookCacheMemory: Map<string, NotebookDocCache> = new Map();
+const assetCacheMemory: Map<number, AssetCache> = new Map();
+
+/**
+ * 清空内存缓存（在每次sync开始时调用，确保数据新鲜）
+ */
+export function clearMemoryCache(): void {
+  notebookCacheMemory.clear();
+  assetCacheMemory.clear();
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -92,18 +111,51 @@ export async function updateNotebookMeta(
 
 /**
  * Load document cache for a specific notebook
+ * 使用内存缓存避免重复读取同一文件
  */
 export async function loadNotebookDocCache(
   plugin: Plugin,
   notebookId: string
 ): Promise<NotebookDocCache> {
+  // Check memory cache first
+  if (notebookCacheMemory.has(notebookId)) {
+    const memCache = notebookCacheMemory.get(notebookId)!;
+    const keyCount = Object.keys(memCache).length;
+    await logInfo(`[Cache] Notebook ${notebookId} loaded from memory (${keyCount} docs)`);
+    return memCache;
+  }
+
+  // Load from file
   const cacheFile = getNotebookCacheFile(notebookId);
-  const cache = await plugin.loadData(cacheFile);
-  return cache || {};
+  await logInfo(`[Cache] Loading notebook ${notebookId} from file: ${cacheFile}`);
+
+  let cache: NotebookDocCache | null = null;
+  try {
+    cache = await plugin.loadData(cacheFile);
+
+    if (cache) {
+      const keyCount = Object.keys(cache).length;
+      await logInfo(`[Cache] Notebook ${notebookId} loaded successfully (${keyCount} docs)`);
+    } else {
+      await logInfo(`[Cache] Notebook ${notebookId} file not found or empty`);
+    }
+  } catch (error) {
+    await logError(`[Cache] Failed to load notebook ${notebookId}`, error);
+  }
+
+  const result = cache || {};
+  const finalKeyCount = Object.keys(result).length;
+  await logInfo(`[Cache] Notebook ${notebookId} final result: ${finalKeyCount} docs`);
+
+  // Store in memory cache
+  notebookCacheMemory.set(notebookId, result);
+
+  return result;
 }
 
 /**
  * Save document cache for a specific notebook
+ * 同时更新内存缓存
  */
 export async function saveNotebookDocCache(
   plugin: Plugin,
@@ -116,6 +168,9 @@ export async function saveNotebookDocCache(
   await logInfo(`[Cache] Saving to ${cacheFile}: ${preview}...`);
   await plugin.saveData(cacheFile, cache);
   await logInfo(`[Cache] Save completed for ${cacheFile}`);
+
+  // Update memory cache
+  notebookCacheMemory.set(notebookId, cache);
 }
 
 /**
@@ -183,18 +238,51 @@ export async function getNotebookDocIds(
 
 /**
  * Load asset cache for a specific shard
+ * 使用内存缓存避免重复读取同一文件
  */
 async function loadAssetCacheShard(
   plugin: Plugin,
   shard: number
 ): Promise<AssetCache> {
+  // Check memory cache first
+  if (assetCacheMemory.has(shard)) {
+    const memCache = assetCacheMemory.get(shard)!;
+    const keyCount = Object.keys(memCache).length;
+    await logInfo(`[Cache] Asset shard ${shard} loaded from memory (${keyCount} entries)`);
+    return memCache;
+  }
+
+  // Load from file
   const cacheFile = `assets-${shard}.json`;
-  const cache = await plugin.loadData(cacheFile);
-  return cache || {};
+  await logInfo(`[Cache] Loading asset shard ${shard} from file: ${cacheFile}`);
+
+  let cache: AssetCache | null = null;
+  try {
+    cache = await plugin.loadData(cacheFile);
+
+    if (cache) {
+      const keyCount = Object.keys(cache).length;
+      await logInfo(`[Cache] Asset shard ${shard} loaded successfully (${keyCount} entries)`);
+    } else {
+      await logInfo(`[Cache] Asset shard ${shard} file not found or empty`);
+    }
+  } catch (error) {
+    await logError(`[Cache] Failed to load asset shard ${shard}`, error);
+  }
+
+  const result = cache || {};
+  const finalKeyCount = Object.keys(result).length;
+  await logInfo(`[Cache] Asset shard ${shard} final result: ${finalKeyCount} entries`);
+
+  // Store in memory cache
+  assetCacheMemory.set(shard, result);
+
+  return result;
 }
 
 /**
  * Save asset cache for a specific shard
+ * 同时更新内存缓存
  */
 async function saveAssetCacheShard(
   plugin: Plugin,
@@ -203,22 +291,46 @@ async function saveAssetCacheShard(
 ): Promise<void> {
   const cacheFile = `assets-${shard}.json`;
   await plugin.saveData(cacheFile, cache);
+
+  // Update memory cache
+  assetCacheMemory.set(shard, cache);
 }
 
 /**
  * Get cache entry for a specific asset
+ *
+ * 优化：扫描所有shard文件，避免shard计算不一致导致的缓存miss
+ * 这样可以兼容不同版本创建的缓存文件
  */
 export async function getAssetCacheEntry(
   plugin: Plugin,
   assetPath: string
 ): Promise<AssetCacheEntry | null> {
-  const shard = await getAssetShard(assetPath);
-  const cache = await loadAssetCacheShard(plugin, shard);
-  const entry = cache[assetPath] || null;
-  if (entry) {
-    await logInfo(`[Cache] Asset cache hit: ${assetPath} (shard ${shard})`);
+  // 1. 先尝试计算的shard（快速路径）
+  const expectedShard = await getAssetShard(assetPath);
+  const expectedCache = await loadAssetCacheShard(plugin, expectedShard);
+
+  if (expectedCache[assetPath]) {
+    await logInfo(`[Cache] Asset cache HIT: ${assetPath} (shard ${expectedShard})`);
+    return expectedCache[assetPath];
   }
-  return entry;
+
+  // 2. 如果在计算的shard中没找到，扫描所有其他shard（兼容路径）
+  await logInfo(`[Cache] Asset not found in expected shard ${expectedShard}, scanning all shards...`);
+
+  for (let shard = 0; shard < ASSET_SHARD_COUNT; shard++) {
+    if (shard === expectedShard) continue; // 已经查过了
+
+    const cache = await loadAssetCacheShard(plugin, shard);
+    if (cache[assetPath]) {
+      await logInfo(`[Cache] Asset cache HIT: ${assetPath} (found in shard ${shard}, expected ${expectedShard})`);
+      return cache[assetPath];
+    }
+  }
+
+  // 3. 所有shard都没找到
+  await logInfo(`[Cache] Asset cache MISS: ${assetPath} - NOT found in any of ${ASSET_SHARD_COUNT} shards`);
+  return null;
 }
 
 /**

@@ -81,6 +81,9 @@ export async function readAssetFile(assetPath: string): Promise<ArrayBuffer> {
 /**
  * Upload a single asset to GitHub with cache check
  * Returns true if uploaded, false if skipped (cache hit)
+ *
+ * 优化：只检查缓存是否存在，不验证 fileSize 或 contentHash
+ * 这样可以避免跨设备同步时的缓存兼容性问题
  */
 export async function uploadAssetWithCache(
   plugin: Plugin,
@@ -99,33 +102,38 @@ export async function uploadAssetWithCache(
       return false; // Skip large files
     }
 
-    // 1. Read file content
-    onProgress?.(`[Reading] ${asset.path} (${formatFileSize(asset.size)})`);
-    const content = await readAssetFile(asset.path);
-
-    // 2. Calculate hash
-    onProgress?.(`[Hashing] ${asset.path} (${formatFileSize(asset.size)})`);
-    const contentHash = await calculateFileHash(content);
-
-    // 3. Check cache
+    // 1. Check cache FIRST (before reading file)
+    // 只要缓存中有记录，就相信已经上传过，不做任何验证
     const cached = await getAssetCacheEntry(plugin, asset.path);
 
-    if (cached && cached.contentHash === contentHash) {
-      onProgress?.(`[Cache Hit] ${asset.path} unchanged, skipping`);
+    if (cached) {
+      onProgress?.(`[Cache Hit] ${asset.path} - skipping (cached)`);
+      await logInfo(`[Assets] Cache hit for ${asset.path}, skipping upload`);
       return false; // Skip upload
     }
 
-    // 4. Upload to GitHub
+    // 2. Cache miss - need to upload
+    await logInfo(`[Assets] Cache miss for ${asset.path}, will upload`);
+
+    // 3. Read file content
+    onProgress?.(`[Reading] ${asset.path} (${formatFileSize(asset.size)})`);
+    const content = await readAssetFile(asset.path);
+
+    // 4. Calculate hash
+    onProgress?.(`[Hashing] ${asset.path} (${formatFileSize(asset.size)})`);
+    const contentHash = await calculateFileHash(content);
+
+    // 5. Upload to GitHub
     const sizeMB = (asset.size / (1024 * 1024)).toFixed(2);
     onProgress?.(`[Uploading] ${asset.path} (${sizeMB} MB)`);
     const githubPath = `${settings.assetsDir}/${asset.path}`;
     const githubSHA = await uploadFileToGitHub(
-      Buffer.from(content),
+      content,
       githubPath,
       settings
     );
 
-    // 5. Update cache
+    // 6. Update cache
     const cacheEntry = {
       assetPath: asset.path,
       contentHash,
@@ -158,7 +166,7 @@ function formatFileSize(bytes: number): string {
  * Upload file to GitHub using existing git.ts logic
  */
 async function uploadFileToGitHub(
-  content: Buffer,
+  content: ArrayBuffer,
   path: string,
   settings: Settings
 ): Promise<string> {
@@ -179,7 +187,7 @@ async function uploadFileToGitHub(
       contentBase64: "",
       message: `Upload asset ${path.split("/").pop()}`,
     },
-    content.buffer
+    content
   );
 
   // 提取 GitHub SHA

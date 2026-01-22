@@ -1,14 +1,15 @@
 import { LOG_FILE_PATH } from "./constants";
-import { putFile, readTextFile } from "./siyuan-api";
+import { putFile } from "./siyuan-api";
 
 let enabled = false;
 let logBuffer: string[] = [];
-let flushTimer: NodeJS.Timeout | null = null;
-const FLUSH_INTERVAL_MS = 5000; // 每5秒flush一次
-const MAX_BUFFER_SIZE = 100; // 或者缓冲区达到100条时立即flush
+
+// 日志轮转设置：只保留最近N行，防止文件无限增长
+const MAX_LOG_LINES = 1000;
 
 export function initLogger(): void {
   enabled = true;
+  logBuffer = []; // 重置缓冲区
 }
 
 function formatLine(level: string, message: string): string {
@@ -16,32 +17,33 @@ function formatLine(level: string, message: string): string {
   return `[${ts}] [${level}] ${message}\n`;
 }
 
+/**
+ * Flush logs to file (OVERWRITE mode, no append)
+ *
+ * 优化说明：
+ * - 不再读取旧日志文件（避免读取几十MB文件的开销）
+ * - 使用覆盖模式而不是追加模式
+ * - 只保留最近MAX_LOG_LINES行日志（日志轮转）
+ * - 只在sync结束时调用一次，而不是每5秒或100条就调用
+ */
 async function flushLogs(): Promise<void> {
   if (logBuffer.length === 0) {
     return;
   }
 
   try {
-    const toFlush = logBuffer.join("");
-    logBuffer = []; // 清空缓冲区
+    // 日志轮转：只保留最近MAX_LOG_LINES行
+    const lines = logBuffer.slice(-MAX_LOG_LINES);
+    const content = lines.join("");
 
-    const existing = await readTextFile(LOG_FILE_PATH);
-    const next = existing + toFlush;
-    await putFile(LOG_FILE_PATH, new Blob([next], { type: "text/plain" }));
+    // 覆盖写入（不读取旧文件）
+    await putFile(LOG_FILE_PATH, new Blob([content], { type: "text/plain" }));
+
+    // 清空缓冲区
+    logBuffer = [];
   } catch (err) {
     console.warn("lifeos_sync log flush failed", err);
   }
-}
-
-function scheduleFlush(): void {
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-  }
-
-  flushTimer = setTimeout(() => {
-    void flushLogs();
-    flushTimer = null;
-  }, FLUSH_INTERVAL_MS);
 }
 
 async function appendLog(level: string, message: string): Promise<void> {
@@ -51,17 +53,8 @@ async function appendLog(level: string, message: string): Promise<void> {
 
   logBuffer.push(formatLine(level, message));
 
-  // 如果缓冲区过大，立即flush
-  if (logBuffer.length >= MAX_BUFFER_SIZE) {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
-    }
-    await flushLogs();
-  } else {
-    // 否则延迟flush
-    scheduleFlush();
-  }
+  // 不再自动flush，只在内存中累积
+  // flush将在sync结束时统一调用
 }
 
 export async function logInfo(message: string): Promise<void> {
@@ -76,12 +69,9 @@ export async function logError(message: string, err?: unknown): Promise<void> {
 }
 
 /**
- * 强制flush所有待写入的日志
+ * 强制flush所有待写入的日志（覆盖模式）
+ * 应该在sync结束时调用
  */
 export async function flushAllLogs(): Promise<void> {
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
   await flushLogs();
 }

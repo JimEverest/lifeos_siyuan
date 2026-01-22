@@ -10,7 +10,7 @@
   },
   "author": "lifeos",
   "url": "https://github.com/yourname/lifeos_sync",
-  "version": "0.1.0",
+  "version": "0.3.4",
   "minAppVersion": "3.0.0",
   "backends": [
     "all"

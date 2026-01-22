@@ -6,12 +6,12 @@
 
 import type { Plugin } from "siyuan";
 import type { Settings, IncrementalSyncResult, DocMetadata, AssetMetadata } from "./types";
-import { logInfo, logError } from "./logger";
-import { getDocCacheEntry, updateDocCacheEntry } from "./cache-manager";
+import { logInfo, logError, flushAllLogs } from "./logger";
+import { getDocCacheEntry, updateDocCacheEntry, clearMemoryCache } from "./cache-manager";
 import { getAssetCacheEntry, updateAssetCacheEntry } from "./cache-manager";
 import { exportCurrentDocToGit } from "./exporter";
 import { uploadAssetWithCache } from "./assets-sync";
-import { listNotebooks, getDocInfo } from "./siyuan-api";
+import { listNotebooks, getDocInfo, clearNotebooksCache } from "./siyuan-api";
 
 // ============================================================================
 // 文档增量扫描
@@ -24,6 +24,7 @@ async function getAllDocMetadata(): Promise<DocMetadata[]> {
   await logInfo("[IncrementalSync] Fetching all document metadata");
 
   // 使用 SiYuan SQL API 批量查询文档元数据
+  // 注意：必须明确指定LIMIT，否则API默认只返回64条
   const response = await fetch("/api/query/sql", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -31,7 +32,8 @@ async function getAllDocMetadata(): Promise<DocMetadata[]> {
       stmt: `SELECT id, box, path, hpath, content AS name, updated
              FROM blocks
              WHERE type = 'd'
-             ORDER BY updated DESC`
+             ORDER BY updated DESC
+             LIMIT 999999`
     })
   });
 
@@ -42,14 +44,33 @@ async function getAllDocMetadata(): Promise<DocMetadata[]> {
     return [];
   }
 
-  const docs: DocMetadata[] = (result.data || [])
+  const rawData = result.data || [];
+  await logInfo(`[IncrementalSync] SQL returned ${rawData.length} rows`);
+
+  // Debug: Count filter reasons
+  let filteredNoId = 0;
+  let filteredPlugins = 0;
+  let filteredNoTimestamp = 0;
+  let passed = 0;
+
+  const docs: DocMetadata[] = rawData
     .filter((row: any) => {
       // 过滤掉无效的文档
-      if (!row.id || !row.box) return false;
+      if (!row.id || !row.box) {
+        filteredNoId++;
+        return false;
+      }
       // 只过滤掉特殊的 plugins box
-      if (row.box === 'plugins') return false;
+      if (row.box === 'plugins') {
+        filteredPlugins++;
+        return false;
+      }
       // 过滤掉没有有效时间戳的文档
-      if (!row.updated || typeof row.updated !== 'string') return false;
+      if (!row.updated || typeof row.updated !== 'string') {
+        filteredNoTimestamp++;
+        return false;
+      }
+      passed++;
       return true;
     })
     .map((row: any) => ({
@@ -61,7 +82,13 @@ async function getAllDocMetadata(): Promise<DocMetadata[]> {
       updated: row.updated
     }));
 
+  await logInfo(`[IncrementalSync] Filter results: ${rawData.length} total → ${filteredNoId} no id/box, ${filteredPlugins} plugins, ${filteredNoTimestamp} no timestamp → ${passed} passed`);
   await logInfo(`[IncrementalSync] Found ${docs.length} documents`);
+
+  // Debug: Log first 10 box IDs to see what notebooks we have
+  const boxIds = new Set(docs.map(d => d.box));
+  await logInfo(`[IncrementalSync] Unique notebooks (${boxIds.size}): ${Array.from(boxIds).slice(0, 20).join(', ')}`);
+
   return docs;
 }
 
@@ -153,7 +180,12 @@ async function getAllAssetMetadata(): Promise<AssetMetadata[]> {
 }
 
 /**
- * 筛选需要同步的资源（基于时间戳）
+ * 筛选需要同步的资源
+ *
+ * 注意：不再使用mtime判断，因为多端同步时mtime会不同，导致重复上传
+ * 改为只检查缓存是否存在：
+ * - 缓存不存在 → 新文件，需要上传
+ * - 缓存存在 → 跳过（由uploadAssetWithCache的hash检查作为二次验证）
  */
 export async function getChangedAssets(
   plugin: Plugin,
@@ -163,34 +195,19 @@ export async function getChangedAssets(
   const startTime = Date.now();
   const changedAssets: AssetMetadata[] = [];
 
-  // 安全的时间格式化
-  let lastSyncTimeStr = 'never';
-  if (typeof lastSyncTime === 'number' && lastSyncTime > 0 && !isNaN(lastSyncTime)) {
-    try {
-      lastSyncTimeStr = new Date(lastSyncTime).toISOString();
-    } catch (e) {
-      lastSyncTimeStr = 'invalid';
-    }
-  }
-  await logInfo(`[IncrementalSync] Scanning ${allAssets.length} assets for changes since ${lastSyncTimeStr}`);
+  await logInfo(`[IncrementalSync] Checking ${allAssets.length} assets (cache-only, no mtime check)`);
 
   for (const asset of allAssets) {
     try {
-      // 检查文件修改时间
-      if (asset.mtime > lastSyncTime) {
-        // 文件修改时间晚于上次同步 → 新增或修改
-        changedAssets.push(asset);
-        await logInfo(`[IncrementalSync] Changed asset: ${asset.path}`);
-        continue;
-      }
-
-      // 双重检查：查询缓存确认
+      // 只检查缓存是否存在，不检查mtime
       const cached = await getAssetCacheEntry(plugin, asset.path);
       if (!cached) {
-        // 缓存不存在但文件存在 → 新文件
+        // 缓存不存在 → 新文件，需要上传
         changedAssets.push(asset);
-        await logInfo(`[IncrementalSync] New asset: ${asset.path}`);
+        await logInfo(`[IncrementalSync] New asset (no cache): ${asset.path}`);
       }
+      // 如果缓存存在，跳过（相信缓存记录）
+      // uploadAssetWithCache内部还会做hash检查作为二次验证
     } catch (error) {
       await logError(`[IncrementalSync] Error checking asset ${asset.path}: ${error}`);
       // 出错时保守处理：认为资源已变化
@@ -200,7 +217,7 @@ export async function getChangedAssets(
 
   const scanTime = Date.now() - startTime;
   await logInfo(
-    `[IncrementalSync] Asset scan complete: ${changedAssets.length}/${allAssets.length} changed (${scanTime}ms)`
+    `[IncrementalSync] Asset scan complete: ${changedAssets.length}/${allAssets.length} new assets (${scanTime}ms)`
   );
 
   return changedAssets;
@@ -237,6 +254,11 @@ export async function performIncrementalSync(
   await logInfo("[IncrementalSync] Starting incremental sync");
   onProgress?.("Starting incremental sync...");
 
+  // 清空内存缓存，确保本次sync使用新鲜数据
+  clearMemoryCache();
+  clearNotebooksCache();
+  await logInfo("[IncrementalSync] Memory cache cleared");
+
   try {
     // ========== 第一阶段: 同步文档 ==========
     if (settings.autoSync.syncDocs) {
@@ -259,15 +281,15 @@ export async function performIncrementalSync(
         for (let i = 0; i < changedDocs.length; i++) {
           const doc = changedDocs[i];
           try {
-            onProgress?.(`[Step 3/6] [${i + 1}/${changedDocs.length}] ${doc.name}`);
-
             // 调用现有的导出函数（跳过assets，会在后面统一处理）
+            // 将进度信息传递到exporter内部的每个步骤
+            const progressPrefix = `[Step 3/6] [${i + 1}/${changedDocs.length}]`;
             await exportCurrentDocToGit(
               plugin,
               doc.id,
               doc.id,
               settings,
-              (msg) => onProgress?.(`  ${msg}`),
+              (msg) => onProgress?.(`${progressPrefix} ${msg}`),
               true // skipAssets = true
             );
 
@@ -367,10 +389,17 @@ export async function performIncrementalSync(
       `Time: ${result.totalTime}ms`
     );
 
+    // Flush logs to file (one-time write)
+    await flushAllLogs();
+
     return result;
 
   } catch (error) {
     await logError(`[IncrementalSync] Sync failed: ${error}`);
+
+    // Flush logs even on error
+    await flushAllLogs();
+
     throw error;
   }
 }

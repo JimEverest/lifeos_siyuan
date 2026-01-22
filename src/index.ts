@@ -17,7 +17,7 @@ export default class LifeosSyncPlugin extends Plugin {
   async onload(): Promise<void> {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.3.3");
+    await logInfo("plugin loaded v0.4.2");
     this.statusBarEl = createStatusBar(this);
 
     this.addTopBar({
@@ -140,7 +140,7 @@ export default class LifeosSyncPlugin extends Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.3.3</span>
+        <span style="opacity:0.6; font-size:12px;">v0.4.2</span>
       </div>
       <label class="b3-label">Repo URL
         <input class="b3-text-field fn__block" id="${dialogId}-repo" value="${s.repoUrl}">

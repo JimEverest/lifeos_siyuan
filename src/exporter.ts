@@ -51,7 +51,7 @@ function collectAssetPathsFromMarkdown(markdown: string): string[] {
 }
 
 function rewriteAssetLinks(markdown: string, relativePrefix: string): string {
-  return markdown.replace(/!?(\[[^\]]*\])\(([^)]+)\)/g, (full, label, url) => {
+  return markdown.replace(/(!?)(\[[^\]]*\])\(([^)]+)\)/g, (full, exclaim, label, url) => {
     const idx = url.indexOf("assets/");
     if (idx < 0) {
       return full;
@@ -59,7 +59,7 @@ function rewriteAssetLinks(markdown: string, relativePrefix: string): string {
     // Skip "assets/" prefix to avoid double prefix (assets/assets/)
     const rel = url.slice(idx + "assets/".length);
     const next = `${relativePrefix}${rel}`;
-    return `${label}(${next})`;
+    return `${exclaim}${label}(${next})`;
   });
 }
 
@@ -271,6 +271,11 @@ export async function exportCurrentDocToGit(
   const assetsDir = settings.assetsDir || DEFAULT_ASSETS_DIR;
   const relativePrefix = "../".repeat(depth) + assetsDir + "/";
   markdown = rewriteAssetLinks(markdown, relativePrefix);
+
+  // Fix image links: add ! prefix to make [image](...) display as images in GitHub/VSCode
+  // Use negative lookbehind (?<!!) to avoid adding ! if it already exists
+  markdown = markdown.replace(/(?<!!)\[([^\]]*?)\]\((\.\.\/assets\/[^)]+)\)/g, '![$1]($2)');
+  await logInfo(`[Export] Fixed image link format for: ${docId}`);
 
   // Calculate content hash for cache check
   const contentHash = await calculateHash(markdown);

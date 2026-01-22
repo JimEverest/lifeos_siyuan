@@ -54,8 +54,33 @@ export async function readDir(path: string): Promise<Array<{ name: string; isDir
   return await apiPost("/api/file/readDir", { path });
 }
 
+// ============================================================================
+// Cached API Calls
+// ============================================================================
+
+/**
+ * 内存缓存：listNotebooks结果
+ * 避免在一次sync中重复请求notebooks列表（可能被调用上千次）
+ */
+let notebooksCache: Array<{ id: string; name: string }> | null = null;
+
+/**
+ * 清空notebooks缓存（在每次sync开始时调用）
+ */
+export function clearNotebooksCache(): void {
+  notebooksCache = null;
+}
+
+/**
+ * 获取notebooks列表（带缓存）
+ */
 export async function listNotebooks(): Promise<Array<{ id: string; name: string }>> {
-  return await apiPost("/api/notebook/lsNotebooks", {});
+  if (notebooksCache !== null) {
+    return notebooksCache;
+  }
+
+  notebooksCache = await apiPost("/api/notebook/lsNotebooks", {});
+  return notebooksCache;
 }
 
 export async function getDocInfo(docId: string): Promise<any> {

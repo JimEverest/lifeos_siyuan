@@ -74,18 +74,18 @@ async function putFile(path, content) {
   form.append("file", content, "file");
   await apiPostForm("/api/file/putFile", form);
 }
-async function readTextFile(path) {
-  const blob = await getFileBlob(path);
-  if (!blob) {
-    return "";
-  }
-  return await blob.text();
-}
 async function readDir(path) {
   return await apiPost("/api/file/readDir", { path });
 }
+function clearNotebooksCache() {
+  notebooksCache = null;
+}
 async function listNotebooks() {
-  return await apiPost("/api/notebook/lsNotebooks", {});
+  if (notebooksCache !== null) {
+    return notebooksCache;
+  }
+  notebooksCache = await apiPost("/api/notebook/lsNotebooks", {});
+  return notebooksCache;
 }
 async function getDocInfo(docId) {
   const stmt = `select * from blocks where id = '${docId}'`;
@@ -253,9 +253,11 @@ function getActiveDocRefFromDOM() {
   console.error("lifeos_sync: \u2717 No doc ID found through any method");
   return { docId: null, blockId: null };
 }
+var notebooksCache;
 var init_siyuan_api = __esm({
   "src/siyuan-api.ts"() {
     "use strict";
+    notebooksCache = null;
   }
 });
 
@@ -269,6 +271,7 @@ __export(logger_exports, {
 });
 function initLogger() {
   enabled = true;
+  logBuffer = [];
 }
 function formatLine(level, message) {
   const ts = (/* @__PURE__ */ new Date()).toISOString();
@@ -280,38 +283,19 @@ async function flushLogs() {
     return;
   }
   try {
-    const toFlush = logBuffer.join("");
+    const lines = logBuffer.slice(-MAX_LOG_LINES);
+    const content = lines.join("");
+    await putFile(LOG_FILE_PATH, new Blob([content], { type: "text/plain" }));
     logBuffer = [];
-    const existing = await readTextFile(LOG_FILE_PATH);
-    const next = existing + toFlush;
-    await putFile(LOG_FILE_PATH, new Blob([next], { type: "text/plain" }));
   } catch (err) {
     console.warn("lifeos_sync log flush failed", err);
   }
-}
-function scheduleFlush() {
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-  }
-  flushTimer = setTimeout(() => {
-    void flushLogs();
-    flushTimer = null;
-  }, FLUSH_INTERVAL_MS);
 }
 async function appendLog(level, message) {
   if (!enabled) {
     return;
   }
   logBuffer.push(formatLine(level, message));
-  if (logBuffer.length >= MAX_BUFFER_SIZE) {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
-    }
-    await flushLogs();
-  } else {
-    scheduleFlush();
-  }
 }
 async function logInfo(message) {
   console.info(`lifeos_sync: ${message}`);
@@ -323,13 +307,9 @@ async function logError(message, err) {
   await appendLog("ERROR", detail);
 }
 async function flushAllLogs() {
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
   await flushLogs();
 }
-var enabled, logBuffer, flushTimer, FLUSH_INTERVAL_MS, MAX_BUFFER_SIZE;
+var enabled, logBuffer, MAX_LOG_LINES;
 var init_logger = __esm({
   "src/logger.ts"() {
     "use strict";
@@ -337,9 +317,7 @@ var init_logger = __esm({
     init_siyuan_api();
     enabled = false;
     logBuffer = [];
-    flushTimer = null;
-    FLUSH_INTERVAL_MS = 5e3;
-    MAX_BUFFER_SIZE = 100;
+    MAX_LOG_LINES = 1e3;
   }
 });
 
@@ -401,6 +379,7 @@ var cache_manager_exports = {};
 __export(cache_manager_exports, {
   clearAllAssetCache: () => clearAllAssetCache,
   clearAllCache: () => clearAllCache,
+  clearMemoryCache: () => clearMemoryCache,
   clearNotebookCache: () => clearNotebookCache,
   getAssetCacheEntry: () => getAssetCacheEntry,
   getDocCacheEntry: () => getDocCacheEntry,
@@ -417,6 +396,10 @@ __export(cache_manager_exports, {
   updateDocCacheEntry: () => updateDocCacheEntry,
   updateNotebookMeta: () => updateNotebookMeta
 });
+function clearMemoryCache() {
+  notebookCacheMemory.clear();
+  assetCacheMemory.clear();
+}
 function getNotebookCacheFile(notebookId) {
   return `notebook-${notebookId}-docs.json`;
 }
@@ -446,9 +429,31 @@ async function updateNotebookMeta(plugin, notebookId, notebookName, docCount) {
   await saveSyncMeta(plugin, meta);
 }
 async function loadNotebookDocCache(plugin, notebookId) {
+  if (notebookCacheMemory.has(notebookId)) {
+    const memCache = notebookCacheMemory.get(notebookId);
+    const keyCount = Object.keys(memCache).length;
+    await logInfo(`[Cache] Notebook ${notebookId} loaded from memory (${keyCount} docs)`);
+    return memCache;
+  }
   const cacheFile = getNotebookCacheFile(notebookId);
-  const cache = await plugin.loadData(cacheFile);
-  return cache || {};
+  await logInfo(`[Cache] Loading notebook ${notebookId} from file: ${cacheFile}`);
+  let cache = null;
+  try {
+    cache = await plugin.loadData(cacheFile);
+    if (cache) {
+      const keyCount = Object.keys(cache).length;
+      await logInfo(`[Cache] Notebook ${notebookId} loaded successfully (${keyCount} docs)`);
+    } else {
+      await logInfo(`[Cache] Notebook ${notebookId} file not found or empty`);
+    }
+  } catch (error) {
+    await logError(`[Cache] Failed to load notebook ${notebookId}`, error);
+  }
+  const result = cache || {};
+  const finalKeyCount = Object.keys(result).length;
+  await logInfo(`[Cache] Notebook ${notebookId} final result: ${finalKeyCount} docs`);
+  notebookCacheMemory.set(notebookId, result);
+  return result;
 }
 async function saveNotebookDocCache(plugin, notebookId, cache) {
   const cacheFile = getNotebookCacheFile(notebookId);
@@ -456,6 +461,7 @@ async function saveNotebookDocCache(plugin, notebookId, cache) {
   await logInfo(`[Cache] Saving to ${cacheFile}: ${preview}...`);
   await plugin.saveData(cacheFile, cache);
   await logInfo(`[Cache] Save completed for ${cacheFile}`);
+  notebookCacheMemory.set(notebookId, cache);
 }
 async function getDocCacheEntry(plugin, notebookId, docId) {
   const cache = await loadNotebookDocCache(plugin, notebookId);
@@ -484,22 +490,55 @@ async function getNotebookDocIds(plugin, notebookId) {
   return Object.keys(cache);
 }
 async function loadAssetCacheShard(plugin, shard) {
+  if (assetCacheMemory.has(shard)) {
+    const memCache = assetCacheMemory.get(shard);
+    const keyCount = Object.keys(memCache).length;
+    await logInfo(`[Cache] Asset shard ${shard} loaded from memory (${keyCount} entries)`);
+    return memCache;
+  }
   const cacheFile = `assets-${shard}.json`;
-  const cache = await plugin.loadData(cacheFile);
-  return cache || {};
+  await logInfo(`[Cache] Loading asset shard ${shard} from file: ${cacheFile}`);
+  let cache = null;
+  try {
+    cache = await plugin.loadData(cacheFile);
+    if (cache) {
+      const keyCount = Object.keys(cache).length;
+      await logInfo(`[Cache] Asset shard ${shard} loaded successfully (${keyCount} entries)`);
+    } else {
+      await logInfo(`[Cache] Asset shard ${shard} file not found or empty`);
+    }
+  } catch (error) {
+    await logError(`[Cache] Failed to load asset shard ${shard}`, error);
+  }
+  const result = cache || {};
+  const finalKeyCount = Object.keys(result).length;
+  await logInfo(`[Cache] Asset shard ${shard} final result: ${finalKeyCount} entries`);
+  assetCacheMemory.set(shard, result);
+  return result;
 }
 async function saveAssetCacheShard(plugin, shard, cache) {
   const cacheFile = `assets-${shard}.json`;
   await plugin.saveData(cacheFile, cache);
+  assetCacheMemory.set(shard, cache);
 }
 async function getAssetCacheEntry(plugin, assetPath) {
-  const shard = await getAssetShard(assetPath);
-  const cache = await loadAssetCacheShard(plugin, shard);
-  const entry = cache[assetPath] || null;
-  if (entry) {
-    await logInfo(`[Cache] Asset cache hit: ${assetPath} (shard ${shard})`);
+  const expectedShard = await getAssetShard(assetPath);
+  const expectedCache = await loadAssetCacheShard(plugin, expectedShard);
+  if (expectedCache[assetPath]) {
+    await logInfo(`[Cache] Asset cache HIT: ${assetPath} (shard ${expectedShard})`);
+    return expectedCache[assetPath];
   }
-  return entry;
+  await logInfo(`[Cache] Asset not found in expected shard ${expectedShard}, scanning all shards...`);
+  for (let shard = 0; shard < ASSET_SHARD_COUNT; shard++) {
+    if (shard === expectedShard) continue;
+    const cache = await loadAssetCacheShard(plugin, shard);
+    if (cache[assetPath]) {
+      await logInfo(`[Cache] Asset cache HIT: ${assetPath} (found in shard ${shard}, expected ${expectedShard})`);
+      return cache[assetPath];
+    }
+  }
+  await logInfo(`[Cache] Asset cache MISS: ${assetPath} - NOT found in any of ${ASSET_SHARD_COUNT} shards`);
+  return null;
 }
 async function updateAssetCacheEntry(plugin, assetPath, entry) {
   const shard = await getAssetShard(assetPath);
@@ -549,7 +588,7 @@ async function clearAllCache(plugin) {
   await plugin.removeData(SYNC_META_FILE);
   await plugin.removeData("last-asset-sync-time");
 }
-var SYNC_META_FILE, ASSET_SHARD_COUNT;
+var SYNC_META_FILE, ASSET_SHARD_COUNT, notebookCacheMemory, assetCacheMemory;
 var init_cache_manager = __esm({
   "src/cache-manager.ts"() {
     "use strict";
@@ -557,6 +596,8 @@ var init_cache_manager = __esm({
     init_hash_utils();
     SYNC_META_FILE = "sync-meta.json";
     ASSET_SHARD_COUNT = 16;
+    notebookCacheMemory = /* @__PURE__ */ new Map();
+    assetCacheMemory = /* @__PURE__ */ new Map();
   }
 });
 
@@ -827,14 +868,14 @@ function collectAssetPathsFromMarkdown(markdown) {
   return Array.from(assets);
 }
 function rewriteAssetLinks(markdown, relativePrefix) {
-  return markdown.replace(/!?(\[[^\]]*\])\(([^)]+)\)/g, (full, label, url) => {
+  return markdown.replace(/(!?)(\[[^\]]*\])\(([^)]+)\)/g, (full, exclaim, label, url) => {
     const idx = url.indexOf("assets/");
     if (idx < 0) {
       return full;
     }
     const rel = url.slice(idx + "assets/".length);
     const next = `${relativePrefix}${rel}`;
-    return `${label}(${next})`;
+    return `${exclaim}${label}(${next})`;
   });
 }
 function toPatterns(list) {
@@ -1005,6 +1046,8 @@ async function exportCurrentDocToGit(plugin, docId, blockId, settings, onProgres
   const assetsDir = settings.assetsDir || DEFAULT_ASSETS_DIR;
   const relativePrefix = "../".repeat(depth) + assetsDir + "/";
   markdown = rewriteAssetLinks(markdown, relativePrefix);
+  markdown = markdown.replace(/(?<!!)\[([^\]]*?)\]\((\.\.\/assets\/[^)]+)\)/g, "![$1]($2)");
+  await logInfo(`[Export] Fixed image link format for: ${docId}`);
   const contentHash = await calculateHash(markdown);
   const cached = await getDocCacheEntry(plugin, info.box, usedId);
   if (cached && cached.contentHash === contentHash) {
@@ -1171,20 +1214,22 @@ async function uploadAssetWithCache(plugin, asset, settings, onProgress) {
       await logInfo(`[Assets] ${msg}`);
       return false;
     }
+    const cached = await getAssetCacheEntry(plugin, asset.path);
+    if (cached) {
+      onProgress?.(`[Cache Hit] ${asset.path} - skipping (cached)`);
+      await logInfo(`[Assets] Cache hit for ${asset.path}, skipping upload`);
+      return false;
+    }
+    await logInfo(`[Assets] Cache miss for ${asset.path}, will upload`);
     onProgress?.(`[Reading] ${asset.path} (${formatFileSize(asset.size)})`);
     const content = await readAssetFile(asset.path);
     onProgress?.(`[Hashing] ${asset.path} (${formatFileSize(asset.size)})`);
     const contentHash = await calculateFileHash(content);
-    const cached = await getAssetCacheEntry(plugin, asset.path);
-    if (cached && cached.contentHash === contentHash) {
-      onProgress?.(`[Cache Hit] ${asset.path} unchanged, skipping`);
-      return false;
-    }
     const sizeMB = (asset.size / (1024 * 1024)).toFixed(2);
     onProgress?.(`[Uploading] ${asset.path} (${sizeMB} MB)`);
     const githubPath = `${settings.assetsDir}/${asset.path}`;
     const githubSHA = await uploadFileToGitHub(
-      Buffer.from(content),
+      content,
       githubPath,
       settings
     );
@@ -1225,7 +1270,7 @@ async function uploadFileToGitHub(content, path, settings) {
       contentBase64: "",
       message: `Upload asset ${path.split("/").pop()}`
     },
-    content.buffer
+    content
   );
   let githubSHA;
   if (result && result.content && result.content.sha) {
@@ -1295,6 +1340,7 @@ init_logger();
 init_logger();
 init_cache_manager();
 init_cache_manager();
+init_siyuan_api();
 async function getAllDocMetadata() {
   await logInfo("[IncrementalSync] Fetching all document metadata");
   const response = await fetch("/api/query/sql", {
@@ -1304,7 +1350,8 @@ async function getAllDocMetadata() {
       stmt: `SELECT id, box, path, hpath, content AS name, updated
              FROM blocks
              WHERE type = 'd'
-             ORDER BY updated DESC`
+             ORDER BY updated DESC
+             LIMIT 999999`
     })
   });
   const result = await response.json();
@@ -1312,10 +1359,26 @@ async function getAllDocMetadata() {
     await logError(`Failed to query documents: ${result.msg}`);
     return [];
   }
-  const docs = (result.data || []).filter((row) => {
-    if (!row.id || !row.box) return false;
-    if (row.box === "plugins") return false;
-    if (!row.updated || typeof row.updated !== "string") return false;
+  const rawData = result.data || [];
+  await logInfo(`[IncrementalSync] SQL returned ${rawData.length} rows`);
+  let filteredNoId = 0;
+  let filteredPlugins = 0;
+  let filteredNoTimestamp = 0;
+  let passed = 0;
+  const docs = rawData.filter((row) => {
+    if (!row.id || !row.box) {
+      filteredNoId++;
+      return false;
+    }
+    if (row.box === "plugins") {
+      filteredPlugins++;
+      return false;
+    }
+    if (!row.updated || typeof row.updated !== "string") {
+      filteredNoTimestamp++;
+      return false;
+    }
+    passed++;
     return true;
   }).map((row) => ({
     id: row.id,
@@ -1325,7 +1388,10 @@ async function getAllDocMetadata() {
     name: row.name,
     updated: row.updated
   }));
+  await logInfo(`[IncrementalSync] Filter results: ${rawData.length} total \u2192 ${filteredNoId} no id/box, ${filteredPlugins} plugins, ${filteredNoTimestamp} no timestamp \u2192 ${passed} passed`);
   await logInfo(`[IncrementalSync] Found ${docs.length} documents`);
+  const boxIds = new Set(docs.map((d) => d.box));
+  await logInfo(`[IncrementalSync] Unique notebooks (${boxIds.size}): ${Array.from(boxIds).slice(0, 20).join(", ")}`);
   return docs;
 }
 async function getChangedDocuments(plugin, allDocs) {
@@ -1387,26 +1453,13 @@ async function getAllAssetMetadata() {
 async function getChangedAssets(plugin, allAssets, lastSyncTime) {
   const startTime = Date.now();
   const changedAssets = [];
-  let lastSyncTimeStr = "never";
-  if (typeof lastSyncTime === "number" && lastSyncTime > 0 && !isNaN(lastSyncTime)) {
-    try {
-      lastSyncTimeStr = new Date(lastSyncTime).toISOString();
-    } catch (e) {
-      lastSyncTimeStr = "invalid";
-    }
-  }
-  await logInfo(`[IncrementalSync] Scanning ${allAssets.length} assets for changes since ${lastSyncTimeStr}`);
+  await logInfo(`[IncrementalSync] Checking ${allAssets.length} assets (cache-only, no mtime check)`);
   for (const asset of allAssets) {
     try {
-      if (asset.mtime > lastSyncTime) {
-        changedAssets.push(asset);
-        await logInfo(`[IncrementalSync] Changed asset: ${asset.path}`);
-        continue;
-      }
       const cached = await getAssetCacheEntry(plugin, asset.path);
       if (!cached) {
         changedAssets.push(asset);
-        await logInfo(`[IncrementalSync] New asset: ${asset.path}`);
+        await logInfo(`[IncrementalSync] New asset (no cache): ${asset.path}`);
       }
     } catch (error) {
       await logError(`[IncrementalSync] Error checking asset ${asset.path}: ${error}`);
@@ -1415,7 +1468,7 @@ async function getChangedAssets(plugin, allAssets, lastSyncTime) {
   }
   const scanTime = Date.now() - startTime;
   await logInfo(
-    `[IncrementalSync] Asset scan complete: ${changedAssets.length}/${allAssets.length} changed (${scanTime}ms)`
+    `[IncrementalSync] Asset scan complete: ${changedAssets.length}/${allAssets.length} new assets (${scanTime}ms)`
   );
   return changedAssets;
 }
@@ -1437,6 +1490,9 @@ async function performIncrementalSync(plugin, settings, onProgress) {
   };
   await logInfo("[IncrementalSync] Starting incremental sync");
   onProgress?.("Starting incremental sync...");
+  clearMemoryCache();
+  clearNotebooksCache();
+  await logInfo("[IncrementalSync] Memory cache cleared");
   try {
     if (settings.autoSync.syncDocs) {
       onProgress?.("[Step 1/6 Scan documents] Loading document metadata...");
@@ -1452,13 +1508,13 @@ async function performIncrementalSync(plugin, settings, onProgress) {
         for (let i = 0; i < changedDocs.length; i++) {
           const doc = changedDocs[i];
           try {
-            onProgress?.(`[Step 3/6] [${i + 1}/${changedDocs.length}] ${doc.name}`);
+            const progressPrefix = `[Step 3/6] [${i + 1}/${changedDocs.length}]`;
             await exportCurrentDocToGit(
               plugin,
               doc.id,
               doc.id,
               settings,
-              (msg) => onProgress?.(`  ${msg}`),
+              (msg) => onProgress?.(`${progressPrefix} ${msg}`),
               true
               // skipAssets = true
             );
@@ -1538,9 +1594,11 @@ async function performIncrementalSync(plugin, settings, onProgress) {
     await logInfo(
       `[IncrementalSync] Complete: Docs(${result.docsUploaded}/${result.docsChanged}), Assets(${result.assetsUploaded}/${result.assetsChanged}), Time: ${result.totalTime}ms`
     );
+    await flushAllLogs();
     return result;
   } catch (error) {
     await logError(`[IncrementalSync] Sync failed: ${error}`);
+    await flushAllLogs();
     throw error;
   }
 }
@@ -1715,7 +1773,7 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
   async onload() {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.3.3");
+    await logInfo("plugin loaded v0.4.2");
     this.statusBarEl = createStatusBar(this);
     this.addTopBar({
       icon: "iconSync",
@@ -1823,7 +1881,7 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.3.3</span>
+        <span style="opacity:0.6; font-size:12px;">v0.4.2</span>
       </div>
       <label class="b3-label">Repo URL
         <input class="b3-text-field fn__block" id="${dialogId}-repo" value="${s.repoUrl}">
