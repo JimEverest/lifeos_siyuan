@@ -1165,6 +1165,10 @@ init_logger();
 var STORAGE_KEY_DEVICE_ID = "lifeos-sync-device-id";
 var STORAGE_KEY_DEVICE_NAME = "lifeos-sync-device-name";
 var STORAGE_KEY_DEVICE_CREATED = "lifeos-sync-device-created";
+var SESSION_KEY_TAB_ID = "lifeos-sync-tab-id";
+var SESSION_KEY_TAB_NAME = "lifeos-sync-tab-name";
+var SESSION_KEY_TAB_CREATED = "lifeos-sync-tab-created";
+var STORAGE_KEY_TAB_COUNTER = "lifeos-sync-tab-counter";
 function generateDeviceId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -1278,9 +1282,115 @@ function getShortDeviceId() {
   const fullId = getDeviceId();
   return fullId.substring(0, 8);
 }
+function getNextTabNumber() {
+  try {
+    const currentStr = localStorage.getItem(STORAGE_KEY_TAB_COUNTER);
+    const current = currentStr ? parseInt(currentStr, 10) : 0;
+    const next = current + 1;
+    localStorage.setItem(STORAGE_KEY_TAB_COUNTER, next.toString());
+    return next;
+  } catch (e) {
+    return Math.floor(Math.random() * 1e3) + 1;
+  }
+}
+function generateShortTabId() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let i = 0; i < 8; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+function getTabId() {
+  try {
+    let tabId = sessionStorage.getItem(SESSION_KEY_TAB_ID);
+    if (!tabId) {
+      tabId = generateShortTabId();
+      sessionStorage.setItem(SESSION_KEY_TAB_ID, tabId);
+      sessionStorage.setItem(SESSION_KEY_TAB_CREATED, Date.now().toString());
+      const tabNumber = getNextTabNumber();
+      sessionStorage.setItem(SESSION_KEY_TAB_NAME, `#${tabNumber}`);
+      console.log(`[DeviceManager] New tab session: #${tabNumber} (${tabId})`);
+    }
+    return tabId;
+  } catch (e) {
+    console.error("[DeviceManager] sessionStorage not available");
+    return `temp-${generateShortTabId()}`;
+  }
+}
+function getTabNumber() {
+  try {
+    const tabName = sessionStorage.getItem(SESSION_KEY_TAB_NAME);
+    if (tabName && tabName.startsWith("#")) {
+      return parseInt(tabName.substring(1), 10) || 0;
+    }
+    getTabId();
+    const newTabName = sessionStorage.getItem(SESSION_KEY_TAB_NAME);
+    if (newTabName && newTabName.startsWith("#")) {
+      return parseInt(newTabName.substring(1), 10) || 0;
+    }
+    return 0;
+  } catch (e) {
+    return 0;
+  }
+}
+function getTabName() {
+  try {
+    const name = sessionStorage.getItem(SESSION_KEY_TAB_NAME);
+    if (name) {
+      return name;
+    }
+    getTabId();
+    return sessionStorage.getItem(SESSION_KEY_TAB_NAME) || "#?";
+  } catch (e) {
+    return "#?";
+  }
+}
+function getTabInfo() {
+  const tabId = getTabId();
+  const tabName = getTabName();
+  const tabNumber = getTabNumber();
+  let createdAt = 0;
+  try {
+    const createdStr = sessionStorage.getItem(SESSION_KEY_TAB_CREATED);
+    if (createdStr) {
+      createdAt = parseInt(createdStr, 10);
+    }
+  } catch (e) {
+  }
+  return {
+    tabId,
+    tabName,
+    tabNumber,
+    createdAt
+  };
+}
+function getFullIdentity() {
+  const device = getDeviceInfo();
+  const tab = getTabInfo();
+  const isElectron = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("electron");
+  const displayName = isElectron ? device.deviceName : `${device.deviceName} ${tab.tabName}`;
+  const uniqueId = `${device.deviceId}-tab-${tab.tabId}`;
+  return {
+    device,
+    tab,
+    displayName,
+    uniqueId
+  };
+}
+function isBrowserEnvironment() {
+  try {
+    const ua = navigator.userAgent.toLowerCase();
+    return !ua.includes("electron");
+  } catch (e) {
+    return false;
+  }
+}
 async function initDeviceManager() {
-  const info = getDeviceInfo();
-  await logInfo(`[DeviceManager] Device initialized: ${info.deviceName} (${info.deviceId.substring(0, 8)}...)`);
+  const device = getDeviceInfo();
+  const tab = getTabInfo();
+  const identity = getFullIdentity();
+  await logInfo(`[DeviceManager] Initialized: ${identity.displayName} (device: ${device.deviceId.substring(0, 8)}..., tab: ${tab.tabId})`);
 }
 
 // src/sync-lock.ts
@@ -2044,6 +2154,203 @@ init_logger();
 init_cache_manager();
 init_cache_manager();
 init_siyuan_api();
+
+// src/sync-history.ts
+init_logger();
+var HISTORY_FILE = "sync-history.json";
+var STATS_FILE = "sync-stats.json";
+var MAX_RECORDS = 100;
+async function loadSyncHistory(plugin) {
+  try {
+    const data = await plugin.loadData(HISTORY_FILE);
+    if (data && data.records) {
+      return data;
+    }
+  } catch (error) {
+    await logError("[SyncHistory] Failed to load history", error);
+  }
+  return {
+    records: [],
+    maxRecords: MAX_RECORDS,
+    lastUpdated: Date.now()
+  };
+}
+async function saveSyncHistory(plugin, history) {
+  try {
+    history.lastUpdated = Date.now();
+    await plugin.saveData(HISTORY_FILE, history);
+  } catch (error) {
+    await logError("[SyncHistory] Failed to save history", error);
+  }
+}
+async function addSyncRecord(plugin, result, triggerType, skippedReason, errorMessage) {
+  const history = await loadSyncHistory(plugin);
+  const identity = getFullIdentity();
+  const isBrowser = isBrowserEnvironment();
+  const recordId = isBrowser ? `${Date.now()}-${identity.device.deviceId.substring(0, 8)}-${identity.tab.tabId}` : `${Date.now()}-${identity.device.deviceId.substring(0, 8)}`;
+  const record = {
+    id: recordId,
+    timestamp: Date.now(),
+    deviceId: identity.device.deviceId,
+    deviceName: identity.displayName,
+    // 包含Tab标识，如 "Browser-192.168.1.1 #3"
+    tabId: isBrowser ? identity.tab.tabId : void 0,
+    tabName: isBrowser ? identity.tab.tabName : void 0,
+    triggerType,
+    docsScanned: result?.docsScanned ?? 0,
+    docsChanged: result?.docsChanged ?? 0,
+    docsUploaded: result?.docsUploaded ?? 0,
+    docsSkipped: result?.docsSkipped ?? 0,
+    docsFailed: result?.docsFailed ?? 0,
+    assetsScanned: result?.assetsScanned ?? 0,
+    assetsChanged: result?.assetsChanged ?? 0,
+    assetsUploaded: result?.assetsUploaded ?? 0,
+    assetsSkipped: result?.assetsSkipped ?? 0,
+    assetsFailed: result?.assetsFailed ?? 0,
+    duration: result?.totalTime ?? 0,
+    success: result !== null && !errorMessage,
+    skippedReason,
+    errorMessage
+  };
+  history.records.unshift(record);
+  if (history.records.length > history.maxRecords) {
+    history.records = history.records.slice(0, history.maxRecords);
+  }
+  await saveSyncHistory(plugin, history);
+  await logInfo(`[SyncHistory] Record added: ${record.id}, success=${record.success}`);
+  await updateStatistics(plugin, record);
+}
+async function getRecentRecords(plugin, limit = 20) {
+  const history = await loadSyncHistory(plugin);
+  return history.records.slice(0, limit);
+}
+async function clearSyncHistory(plugin) {
+  const emptyHistory = {
+    records: [],
+    maxRecords: MAX_RECORDS,
+    lastUpdated: Date.now()
+  };
+  await saveSyncHistory(plugin, emptyHistory);
+  await logInfo("[SyncHistory] History cleared");
+}
+async function loadSyncStatistics(plugin) {
+  try {
+    const data = await plugin.loadData(STATS_FILE);
+    if (data && typeof data.totalSyncCount === "number") {
+      return data;
+    }
+  } catch (error) {
+    await logError("[SyncHistory] Failed to load statistics", error);
+  }
+  return {
+    totalDocsUploaded: 0,
+    totalAssetsUploaded: 0,
+    totalSyncCount: 0,
+    totalSyncTime: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    deviceSyncStats: {},
+    recentDocsUploaded: 0,
+    recentAssetsUploaded: 0,
+    recentSyncCount: 0,
+    firstSyncTime: 0,
+    lastSyncTime: 0,
+    lastUpdated: Date.now()
+  };
+}
+async function saveSyncStatistics(plugin, stats) {
+  try {
+    stats.lastUpdated = Date.now();
+    await plugin.saveData(STATS_FILE, stats);
+  } catch (error) {
+    await logError("[SyncHistory] Failed to save statistics", error);
+  }
+}
+async function updateStatistics(plugin, record) {
+  const stats = await loadSyncStatistics(plugin);
+  if (record.success) {
+    stats.totalDocsUploaded += record.docsUploaded;
+    stats.totalAssetsUploaded += record.assetsUploaded;
+    stats.totalSyncCount += 1;
+    stats.totalSyncTime += record.duration;
+    stats.cacheHits += record.docsSkipped + record.assetsSkipped;
+    stats.cacheMisses += record.docsUploaded + record.assetsUploaded;
+  }
+  if (!stats.deviceSyncStats[record.deviceId]) {
+    stats.deviceSyncStats[record.deviceId] = {
+      deviceName: record.deviceName,
+      lastSyncTime: 0,
+      syncCount: 0
+    };
+  }
+  stats.deviceSyncStats[record.deviceId].deviceName = record.deviceName;
+  stats.deviceSyncStats[record.deviceId].lastSyncTime = record.timestamp;
+  stats.deviceSyncStats[record.deviceId].syncCount += 1;
+  if (stats.firstSyncTime === 0) {
+    stats.firstSyncTime = record.timestamp;
+  }
+  stats.lastSyncTime = record.timestamp;
+  await recalculateRecentStats(plugin, stats);
+  await saveSyncStatistics(plugin, stats);
+}
+async function recalculateRecentStats(plugin, stats) {
+  const history = await loadSyncHistory(plugin);
+  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1e3;
+  let recentDocs = 0;
+  let recentAssets = 0;
+  let recentCount = 0;
+  for (const record of history.records) {
+    if (record.timestamp >= oneDayAgo && record.success) {
+      recentDocs += record.docsUploaded;
+      recentAssets += record.assetsUploaded;
+      recentCount += 1;
+    }
+  }
+  stats.recentDocsUploaded = recentDocs;
+  stats.recentAssetsUploaded = recentAssets;
+  stats.recentSyncCount = recentCount;
+}
+function formatDuration(ms) {
+  if (ms < 1e3) {
+    return `${ms}ms`;
+  } else if (ms < 6e4) {
+    return `${(ms / 1e3).toFixed(1)}s`;
+  } else {
+    const minutes = Math.floor(ms / 6e4);
+    const seconds = Math.round(ms % 6e4 / 1e3);
+    return `${minutes}m ${seconds}s`;
+  }
+}
+function formatTimestamp(timestamp) {
+  if (timestamp === 0) return "Never";
+  const date = new Date(timestamp);
+  return date.toLocaleString();
+}
+function formatRelativeTime(timestamp) {
+  if (timestamp === 0) return "Never";
+  const now = Date.now();
+  const diff = now - timestamp;
+  if (diff < 6e4) {
+    return "Just now";
+  } else if (diff < 36e5) {
+    const minutes = Math.floor(diff / 6e4);
+    return `${minutes}m ago`;
+  } else if (diff < 864e5) {
+    const hours = Math.floor(diff / 36e5);
+    return `${hours}h ago`;
+  } else {
+    const days = Math.floor(diff / 864e5);
+    return `${days}d ago`;
+  }
+}
+function calculateCacheHitRate(stats) {
+  const total = stats.cacheHits + stats.cacheMisses;
+  if (total === 0) return "N/A";
+  const rate = stats.cacheHits / total * 100;
+  return `${rate.toFixed(1)}%`;
+}
+
+// src/incremental-sync.ts
 async function getAllDocMetadata() {
   await logInfo("[IncrementalSync] Fetching all document metadata");
   const response = await fetch("/api/query/sql", {
@@ -2345,6 +2652,7 @@ async function performIncrementalSyncWithLock(plugin, settings, statusBarEl, onP
     const reason = lockResult.reason || "Unknown reason";
     await logInfo(`[IncrementalSync] Sync skipped: ${reason}`);
     showSyncSkippedStatus(statusBarEl, reason);
+    await addSyncRecord(plugin, null, "auto", reason);
     return { executed: false, skippedReason: reason };
   }
   try {
@@ -2352,11 +2660,13 @@ async function performIncrementalSyncWithLock(plugin, settings, statusBarEl, onP
     const result = await performIncrementalSync(plugin, settings, onProgress);
     const timeSeconds = result.totalTime / 1e3;
     showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
+    await addSyncRecord(plugin, result, "auto");
     return { executed: true, result };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     await logError(`[IncrementalSync] Sync failed: ${errorMsg}`);
     showSyncErrorStatus(statusBarEl, errorMsg);
+    await addSyncRecord(plugin, null, "auto", void 0, errorMsg);
     return { executed: false, error: errorMsg };
   } finally {
     await logInfo(`[IncrementalSync] Releasing lock`);
@@ -2382,11 +2692,13 @@ async function performForceSyncWithLock(plugin, settings, statusBarEl, onProgres
     const result = await performIncrementalSync(plugin, settings, onProgress);
     const timeSeconds = result.totalTime / 1e3;
     showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
+    await addSyncRecord(plugin, result, "force");
     return { executed: true, result };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     await logError(`[IncrementalSync] Force sync failed: ${errorMsg}`);
     showSyncErrorStatus(statusBarEl, errorMsg);
+    await addSyncRecord(plugin, null, "force", void 0, errorMsg);
     return { executed: false, error: errorMsg };
   } finally {
     if (lockSettings.enabled) {
@@ -2567,6 +2879,693 @@ ${result.errors.map((e) => `  ${e.path}: ${e.error}`).join("\n")}`);
   }
 };
 
+// src/sync-dashboard.ts
+init_logger();
+async function openSyncDashboard(plugin) {
+  await logInfo("[Dashboard] Opening sync dashboard");
+  const stats = await loadSyncStatistics(plugin);
+  const recentRecords = await getRecentRecords(plugin, 20);
+  const identity = getFullIdentity();
+  const shortDeviceId = identity.device.deviceId.substring(0, 8);
+  const dialogId = `sync-dashboard-${Date.now()}`;
+  const overlay = document.createElement("div");
+  overlay.id = dialogId;
+  overlay.style.cssText = `
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  `;
+  const card = document.createElement("div");
+  card.style.cssText = `
+    width: 700px;
+    max-width: 95vw;
+    max-height: 85vh;
+    background: var(--b3-theme-surface, #fff);
+    color: var(--b3-theme-on-surface, #000);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  `;
+  card.innerHTML = `
+    <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd);">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2 style="margin: 0; font-size: 18px;">\u{1F4CA} Sync Dashboard</h2>
+        <button id="${dialogId}-close" style="background: none; border: none; font-size: 24px; cursor: pointer; opacity: 0.6;">&times;</button>
+      </div>
+      <div style="margin-top: 8px; font-size: 12px; opacity: 0.7;">
+        Device: ${identity.displayName} (${shortDeviceId}...)
+      </div>
+    </div>
+
+    <div style="flex: 1; overflow-y: auto; padding: 20px;">
+      <!-- Statistics Cards -->
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px;">
+        ${createStatCard("\u{1F4C4}", "Docs Uploaded", stats.totalDocsUploaded.toString(), `Today: ${stats.recentDocsUploaded}`)}
+        ${createStatCard("\u{1F5BC}\uFE0F", "Assets Uploaded", stats.totalAssetsUploaded.toString(), `Today: ${stats.recentAssetsUploaded}`)}
+        ${createStatCard("\u{1F504}", "Total Syncs", stats.totalSyncCount.toString(), `Today: ${stats.recentSyncCount}`)}
+        ${createStatCard("\u26A1", "Cache Hit Rate", calculateCacheHitRate(stats), `${stats.cacheHits} hits`)}
+      </div>
+
+      <!-- Time Stats -->
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px;">
+        ${createStatCard("\u23F1\uFE0F", "Total Sync Time", formatDuration(stats.totalSyncTime), "Cumulative")}
+        ${createStatCard("\u{1F4C5}", "First Sync", stats.firstSyncTime ? formatRelativeTime(stats.firstSyncTime) : "Never", stats.firstSyncTime ? formatTimestamp(stats.firstSyncTime).split(",")[0] : "")}
+        ${createStatCard("\u{1F550}", "Last Sync", stats.lastSyncTime ? formatRelativeTime(stats.lastSyncTime) : "Never", "")}
+      </div>
+
+      <!-- Device Stats -->
+      <div style="margin-bottom: 24px;">
+        <h3 style="margin: 0 0 12px 0; font-size: 14px; opacity: 0.8;">\u{1F4F1} Device Sync Activity</h3>
+        <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); border-radius: 8px; overflow: hidden;">
+          ${createDeviceStatsTable(stats)}
+        </div>
+      </div>
+
+      <!-- Recent Sync History -->
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3 style="margin: 0; font-size: 14px; opacity: 0.8;">\u{1F4DC} Recent Sync History</h3>
+          <button id="${dialogId}-clear" class="b3-button b3-button--outline" style="padding: 4px 12px; font-size: 12px;">Clear History</button>
+        </div>
+        <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); border-radius: 8px; overflow: hidden; max-height: 300px; overflow-y: auto;">
+          ${createHistoryTable(recentRecords)}
+        </div>
+      </div>
+    </div>
+
+    <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: flex-end;">
+      <button id="${dialogId}-done" class="b3-button b3-button--primary">Done</button>
+    </div>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById(`${dialogId}-close`)?.addEventListener("click", close);
+  document.getElementById(`${dialogId}-done`)?.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.getElementById(`${dialogId}-clear`)?.addEventListener("click", async () => {
+    if (confirm("Are you sure you want to clear all sync history?")) {
+      await clearSyncHistory(plugin);
+      close();
+      await openSyncDashboard(plugin);
+    }
+  });
+}
+async function openSyncHistoryDialog(plugin) {
+  await logInfo("[Dashboard] Opening sync history dialog");
+  const records = await getRecentRecords(plugin, 50);
+  const dialogId = `sync-history-${Date.now()}`;
+  const overlay = document.createElement("div");
+  overlay.id = dialogId;
+  overlay.style.cssText = `
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  `;
+  const card = document.createElement("div");
+  card.style.cssText = `
+    width: 800px;
+    max-width: 95vw;
+    max-height: 85vh;
+    background: var(--b3-theme-surface, #fff);
+    color: var(--b3-theme-on-surface, #000);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  `;
+  card.innerHTML = `
+    <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd);">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2 style="margin: 0; font-size: 18px;">\u{1F4DC} Sync History</h2>
+        <button id="${dialogId}-close" style="background: none; border: none; font-size: 24px; cursor: pointer; opacity: 0.6;">&times;</button>
+      </div>
+      <div style="margin-top: 8px; font-size: 12px; opacity: 0.7;">
+        Last ${records.length} sync operations
+      </div>
+    </div>
+
+    <div style="flex: 1; overflow-y: auto; padding: 20px;">
+      ${createDetailedHistoryTable(records)}
+    </div>
+
+    <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: space-between;">
+      <button id="${dialogId}-clear" class="b3-button b3-button--outline">Clear All History</button>
+      <button id="${dialogId}-done" class="b3-button b3-button--primary">Close</button>
+    </div>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById(`${dialogId}-close`)?.addEventListener("click", close);
+  document.getElementById(`${dialogId}-done`)?.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.getElementById(`${dialogId}-clear`)?.addEventListener("click", async () => {
+    if (confirm("Are you sure you want to clear all sync history?")) {
+      await clearSyncHistory(plugin);
+      close();
+    }
+  });
+}
+function createStatCard(icon, label, value, subtitle) {
+  return `
+    <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 16px; border-radius: 8px; text-align: center;">
+      <div style="font-size: 24px; margin-bottom: 4px;">${icon}</div>
+      <div style="font-size: 20px; font-weight: bold; margin-bottom: 2px;">${value}</div>
+      <div style="font-size: 11px; opacity: 0.7;">${label}</div>
+      ${subtitle ? `<div style="font-size: 10px; opacity: 0.5; margin-top: 4px;">${subtitle}</div>` : ""}
+    </div>
+  `;
+}
+function createDeviceStatsTable(stats) {
+  const devices = Object.entries(stats.deviceSyncStats);
+  if (devices.length === 0) {
+    return `<div style="padding: 20px; text-align: center; opacity: 0.6;">No device data yet</div>`;
+  }
+  const identity = getFullIdentity();
+  const currentDeviceId = identity.device.deviceId;
+  let rows = "";
+  for (const [deviceId, data] of devices) {
+    const isCurrentDevice = deviceId === currentDeviceId;
+    rows += `
+      <tr style="border-bottom: 1px solid var(--b3-border-color, #eee);">
+        <td style="padding: 10px 12px;">
+          ${data.deviceName}
+          ${isCurrentDevice ? '<span style="background: var(--b3-theme-primary); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 8px;">Current</span>' : ""}
+        </td>
+        <td style="padding: 10px 12px; text-align: center;">${data.syncCount}</td>
+        <td style="padding: 10px 12px; text-align: right; opacity: 0.7;">${formatRelativeTime(data.lastSyncTime)}</td>
+      </tr>
+    `;
+  }
+  return `
+    <table style="width: 100%; border-collapse: collapse;">
+      <thead>
+        <tr style="background: var(--b3-theme-background, #fff);">
+          <th style="padding: 10px 12px; text-align: left; font-weight: 500; font-size: 12px; opacity: 0.7;">Device</th>
+          <th style="padding: 10px 12px; text-align: center; font-weight: 500; font-size: 12px; opacity: 0.7;">Syncs</th>
+          <th style="padding: 10px 12px; text-align: right; font-weight: 500; font-size: 12px; opacity: 0.7;">Last Active</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+function createHistoryTable(records) {
+  if (records.length === 0) {
+    return `<div style="padding: 20px; text-align: center; opacity: 0.6;">No sync history yet</div>`;
+  }
+  let rows = "";
+  for (const record of records) {
+    const statusIcon = record.success ? "\u2705" : record.skippedReason ? "\u23F8\uFE0F" : "\u274C";
+    const statusColor = record.success ? "var(--b3-card-success-color, green)" : record.skippedReason ? "var(--b3-card-warning-color, orange)" : "var(--b3-card-error-color, red)";
+    rows += `
+      <tr style="border-bottom: 1px solid var(--b3-border-color, #eee);">
+        <td style="padding: 8px 12px; white-space: nowrap;">${formatRelativeTime(record.timestamp)}</td>
+        <td style="padding: 8px 12px;">${record.deviceName}</td>
+        <td style="padding: 8px 12px; text-align: center;">
+          <span style="color: ${statusColor};">${statusIcon}</span>
+        </td>
+        <td style="padding: 8px 12px; text-align: center;">${record.docsUploaded}/${record.assetsUploaded}</td>
+        <td style="padding: 8px 12px; text-align: right; opacity: 0.7;">${formatDuration(record.duration)}</td>
+      </tr>
+    `;
+  }
+  return `
+    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+      <thead>
+        <tr style="background: var(--b3-theme-background, #fff);">
+          <th style="padding: 8px 12px; text-align: left; font-weight: 500; opacity: 0.7;">Time</th>
+          <th style="padding: 8px 12px; text-align: left; font-weight: 500; opacity: 0.7;">Device</th>
+          <th style="padding: 8px 12px; text-align: center; font-weight: 500; opacity: 0.7;">Status</th>
+          <th style="padding: 8px 12px; text-align: center; font-weight: 500; opacity: 0.7;">Docs/Assets</th>
+          <th style="padding: 8px 12px; text-align: right; font-weight: 500; opacity: 0.7;">Duration</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+function createDetailedHistoryTable(records) {
+  if (records.length === 0) {
+    return `<div style="padding: 40px; text-align: center; opacity: 0.6;">No sync history yet</div>`;
+  }
+  let rows = "";
+  for (const record of records) {
+    const statusIcon = record.success ? "\u2705" : record.skippedReason ? "\u23F8\uFE0F" : "\u274C";
+    const triggerBadge = record.triggerType === "auto" ? "\u{1F916}" : record.triggerType === "force" ? "\u26A0\uFE0F" : "\u{1F446}";
+    const statusDetail = record.success ? `Uploaded ${record.docsUploaded} docs, ${record.assetsUploaded} assets` : record.skippedReason || record.errorMessage || "Unknown error";
+    rows += `
+      <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); border-radius: 8px; padding: 12px; margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+          <div>
+            <span style="font-size: 16px; margin-right: 8px;">${statusIcon}</span>
+            <span style="font-weight: 500;">${record.deviceName}</span>
+            <span style="opacity: 0.5; margin-left: 8px; font-size: 11px;">${triggerBadge} ${record.triggerType}</span>
+          </div>
+          <div style="text-align: right; font-size: 12px; opacity: 0.7;">
+            ${formatTimestamp(record.timestamp)}
+          </div>
+        </div>
+        <div style="font-size: 12px; opacity: 0.8; margin-bottom: 6px;">
+          ${statusDetail}
+        </div>
+        <div style="display: flex; gap: 16px; font-size: 11px; opacity: 0.6;">
+          <span>\u{1F4C4} Scanned: ${record.docsScanned} | Changed: ${record.docsChanged} | Uploaded: ${record.docsUploaded}</span>
+          <span>\u{1F5BC}\uFE0F Scanned: ${record.assetsScanned} | Changed: ${record.assetsChanged} | Uploaded: ${record.assetsUploaded}</span>
+          <span>\u23F1\uFE0F ${formatDuration(record.duration)}</span>
+        </div>
+      </div>
+    `;
+  }
+  return rows;
+}
+
+// src/cache-rebuild.ts
+init_logger();
+
+// src/git-utils.ts
+init_logger();
+async function calculateGitBlobSHA(content) {
+  try {
+    const encoder = new TextEncoder();
+    const contentBytes = encoder.encode(content);
+    const header = `blob ${contentBytes.length}\0`;
+    const headerBytes = encoder.encode(header);
+    const combined = new Uint8Array(headerBytes.length + contentBytes.length);
+    combined.set(headerBytes, 0);
+    combined.set(contentBytes, headerBytes.length);
+    const hashBuffer = await crypto.subtle.digest("SHA-1", combined);
+    return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (error) {
+    await logError("[GitUtils] crypto.subtle.digest SHA-1 failed, using fallback", error);
+    return calculateGitBlobSHAFallback(content);
+  }
+}
+function calculateGitBlobSHAFallback(content) {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(content);
+  let hash = 2166136261;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = hash * 16777619 >>> 0;
+  }
+  return `fallback-${hash.toString(16).padStart(8, "0")}`;
+}
+async function calculateGitBlobSHABinary(data) {
+  try {
+    const contentBytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const header = `blob ${contentBytes.length}\0`;
+    const headerBytes = new TextEncoder().encode(header);
+    const combined = new Uint8Array(headerBytes.length + contentBytes.length);
+    combined.set(headerBytes, 0);
+    combined.set(contentBytes, headerBytes.length);
+    const hashBuffer = await crypto.subtle.digest("SHA-1", combined);
+    return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (error) {
+    await logError("[GitUtils] Binary SHA-1 calculation failed", error);
+    const size = data instanceof Uint8Array ? data.length : data.byteLength;
+    return `fallback-binary-${size}`;
+  }
+}
+async function getGitHubFileTree(owner, repo, branch, token) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+  await logInfo(`[GitUtils] Fetching file tree from GitHub: ${owner}/${repo}@${branch}`);
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: "application/vnd.github.v3+json"
+    }
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`GitHub Tree API failed: ${response.status} ${errorText}`);
+  }
+  const data = await response.json();
+  const files = /* @__PURE__ */ new Map();
+  for (const entry of data.tree) {
+    if (entry.type === "blob") {
+      files.set(entry.path, entry.sha);
+    }
+  }
+  await logInfo(`[GitUtils] Retrieved ${files.size} files from GitHub (truncated: ${data.truncated})`);
+  if (data.truncated) {
+    await logError("[GitUtils] Warning: File tree was truncated! Repository may be too large.");
+  }
+  return { files, truncated: data.truncated };
+}
+function parseRepoUrl2(repoUrl) {
+  const httpsMatch = repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  }
+  const sshMatch = repoUrl.match(/git@github\.com:([^/]+)\/([^/.]+)/);
+  if (sshMatch) {
+    return { owner: sshMatch[1], repo: sshMatch[2] };
+  }
+  return null;
+}
+function isFallbackHash(hash) {
+  return hash.startsWith("fallback-");
+}
+
+// src/cache-rebuild.ts
+init_siyuan_api();
+init_cache_manager();
+init_hash_utils();
+async function getAllDocMetadataForRebuild() {
+  await logInfo("[CacheRebuild] Fetching all document metadata");
+  const response = await fetch("/api/query/sql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      stmt: `SELECT id, box, path, hpath, content as name, updated
+             FROM blocks
+             WHERE type = 'd'
+             LIMIT 50000`
+    })
+  });
+  const result = await response.json();
+  const rawData = result.data || [];
+  const docs = rawData.filter((row) => {
+    if (!row.id || !row.box) return false;
+    if (!row.updated || row.updated === "0" || row.updated === 0) return false;
+    return true;
+  }).map((row) => ({
+    id: row.id,
+    box: row.box,
+    path: row.path || "",
+    hpath: row.hpath || "",
+    name: row.name || "untitled",
+    updated: parseInt(row.updated, 10) || 0
+  }));
+  await logInfo(`[CacheRebuild] Found ${docs.length} documents`);
+  return docs;
+}
+function buildGitHubDocPath(doc, exportRoot, notebookName) {
+  const sanitize = (s) => (s || "").replace(/[<>:"/\\|?*]/g, "_").trim() || "untitled";
+  const hpathParts = (doc.hpath || "").split("/").filter(Boolean).slice(0, -1);
+  const title = doc.name || "untitled";
+  const parts = [
+    exportRoot,
+    sanitize(notebookName),
+    ...hpathParts.map(sanitize),
+    `${sanitize(title)}.md`
+  ].filter(Boolean);
+  return parts.join("/");
+}
+async function getAllAssets2() {
+  await logInfo("[CacheRebuild] Scanning assets directory");
+  try {
+    const files = await readDir("/data/assets");
+    const assets = files.filter((f) => !f.isDir).map((f) => ({
+      path: f.name,
+      // 使用文件名，与 assets-sync.ts 保持一致
+      name: f.name
+    }));
+    await logInfo(`[CacheRebuild] Found ${assets.length} assets`);
+    return assets;
+  } catch (error) {
+    await logError("[CacheRebuild] Failed to scan assets", error);
+    return [];
+  }
+}
+async function getNotebookNameMap() {
+  const response = await fetch("/api/notebook/lsNotebooks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({})
+  });
+  const result = await response.json();
+  const notebooks = result.data?.notebooks || [];
+  const map = /* @__PURE__ */ new Map();
+  for (const nb of notebooks) {
+    map.set(nb.id, nb.name);
+  }
+  return map;
+}
+async function rebuildCacheFromGitHub(plugin, settings, onProgress) {
+  const startTime = Date.now();
+  let result = {
+    success: false,
+    docsMatched: 0,
+    docsPending: 0,
+    assetsMatched: 0,
+    assetsPending: 0,
+    duration: 0
+  };
+  try {
+    clearMemoryCache();
+    onProgress?.({
+      phase: "init",
+      current: 0,
+      total: 100,
+      message: "Validating settings...",
+      docsMatched: 0,
+      docsPending: 0,
+      assetsMatched: 0,
+      assetsPending: 0
+    });
+    const repoInfo = parseRepoUrl2(settings.repoUrl);
+    if (!repoInfo) {
+      throw new Error("Invalid repository URL");
+    }
+    const { owner, repo } = repoInfo;
+    const branch = settings.branch || "main";
+    const token = settings.token;
+    if (!token) {
+      throw new Error("GitHub token is required");
+    }
+    await logInfo(`[CacheRebuild] Starting rebuild for ${owner}/${repo}@${branch}`);
+    onProgress?.({
+      phase: "fetch-tree",
+      current: 5,
+      total: 100,
+      message: "Fetching file tree from GitHub...",
+      docsMatched: 0,
+      docsPending: 0,
+      assetsMatched: 0,
+      assetsPending: 0
+    });
+    const { files: remoteFiles, truncated } = await getGitHubFileTree(owner, repo, branch, token);
+    result.truncated = truncated;
+    await logInfo(`[CacheRebuild] Remote file tree: ${remoteFiles.size} files`);
+    if (truncated) {
+      await logError("[CacheRebuild] Warning: File tree was truncated, some files may be missing");
+    }
+    onProgress?.({
+      phase: "scan-docs",
+      current: 10,
+      total: 100,
+      message: "Scanning local documents...",
+      docsMatched: 0,
+      docsPending: 0,
+      assetsMatched: 0,
+      assetsPending: 0
+    });
+    const allDocs = await getAllDocMetadataForRebuild();
+    const notebookNames = await getNotebookNameMap();
+    const exportRoot = settings.exportRoot || "";
+    const docsByNotebook = /* @__PURE__ */ new Map();
+    for (const doc of allDocs) {
+      const list = docsByNotebook.get(doc.box) || [];
+      list.push(doc);
+      docsByNotebook.set(doc.box, list);
+    }
+    let docsProcessed = 0;
+    const totalDocs = allDocs.length;
+    for (const [notebookId, docs] of docsByNotebook) {
+      const notebookName = notebookNames.get(notebookId) || notebookId;
+      const cache = await loadNotebookDocCache(plugin, notebookId);
+      for (const doc of docs) {
+        docsProcessed++;
+        if (docsProcessed % 50 === 0) {
+          const progress = 10 + Math.floor(docsProcessed / totalDocs * 40);
+          onProgress?.({
+            phase: "scan-docs",
+            current: progress,
+            total: 100,
+            message: `Processing document ${docsProcessed}/${totalDocs}...`,
+            docsMatched: result.docsMatched,
+            docsPending: result.docsPending,
+            assetsMatched: result.assetsMatched,
+            assetsPending: result.assetsPending
+          });
+        }
+        try {
+          const githubPath = buildGitHubDocPath(doc, exportRoot, notebookName);
+          const remoteSHA = remoteFiles.get(githubPath);
+          if (!remoteSHA) {
+            result.docsPending++;
+            continue;
+          }
+          const markdownResult = await exportMarkdown(doc.id);
+          let markdown = markdownResult.content || "";
+          if (settings.cleanFrontmatter) {
+            markdown = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*/, "");
+          }
+          const localSHA = await calculateGitBlobSHA(markdown);
+          if (isFallbackHash(localSHA)) {
+            result.docsPending++;
+            continue;
+          }
+          if (localSHA === remoteSHA) {
+            const contentHash = await calculateHash(markdown);
+            const cacheEntry = {
+              docId: doc.id,
+              notebookId,
+              githubPath,
+              contentHash,
+              githubSHA: remoteSHA,
+              lastSyncTime: Date.now(),
+              siyuanUpdated: doc.updated
+            };
+            cache[doc.id] = cacheEntry;
+            result.docsMatched++;
+          } else {
+            result.docsPending++;
+          }
+        } catch (error) {
+          await logError(`[CacheRebuild] Error processing doc ${doc.id}`, error);
+          result.docsPending++;
+        }
+      }
+      await saveNotebookDocCache(plugin, notebookId, cache);
+    }
+    await logInfo(`[CacheRebuild] Documents: ${result.docsMatched} matched, ${result.docsPending} pending`);
+    onProgress?.({
+      phase: "scan-assets",
+      current: 55,
+      total: 100,
+      message: "Scanning local assets...",
+      docsMatched: result.docsMatched,
+      docsPending: result.docsPending,
+      assetsMatched: 0,
+      assetsPending: 0
+    });
+    const allAssets = await getAllAssets2();
+    const assetsDir = settings.assetsDir || "assets";
+    const assetCacheShards = /* @__PURE__ */ new Map();
+    let assetsProcessed = 0;
+    const totalAssets = allAssets.length;
+    for (const asset of allAssets) {
+      assetsProcessed++;
+      if (assetsProcessed % 100 === 0) {
+        const progress = 55 + Math.floor(assetsProcessed / totalAssets * 40);
+        onProgress?.({
+          phase: "scan-assets",
+          current: progress,
+          total: 100,
+          message: `Processing asset ${assetsProcessed}/${totalAssets}...`,
+          docsMatched: result.docsMatched,
+          docsPending: result.docsPending,
+          assetsMatched: result.assetsMatched,
+          assetsPending: result.assetsPending
+        });
+      }
+      try {
+        const githubPath = `${assetsDir}/${asset.name}`;
+        const remoteSHA = remoteFiles.get(githubPath);
+        if (!remoteSHA) {
+          result.assetsPending++;
+          continue;
+        }
+        const blob = await getFileBlob(`/data/assets/${asset.path}`);
+        if (!blob) {
+          result.assetsPending++;
+          continue;
+        }
+        const arrayBuffer = await blob.arrayBuffer();
+        const localSHA = await calculateGitBlobSHABinary(arrayBuffer);
+        if (isFallbackHash(localSHA)) {
+          result.assetsPending++;
+          continue;
+        }
+        if (localSHA === remoteSHA) {
+          const contentHash = await calculateHash(new Uint8Array(arrayBuffer));
+          const cacheEntry = {
+            assetPath: asset.path,
+            contentHash,
+            githubSHA: remoteSHA,
+            lastSyncTime: Date.now(),
+            fileSize: arrayBuffer.byteLength
+          };
+          const shardHash = await calculateShardHash(asset.path);
+          const shard = parseInt(shardHash.substring(0, 2), 16) % 16;
+          if (!assetCacheShards.has(shard)) {
+            try {
+              const existing = await plugin.loadData(`assets-${shard}.json`);
+              assetCacheShards.set(shard, existing || {});
+            } catch {
+              assetCacheShards.set(shard, {});
+            }
+          }
+          assetCacheShards.get(shard)[asset.path] = cacheEntry;
+          result.assetsMatched++;
+        } else {
+          result.assetsPending++;
+        }
+      } catch (error) {
+        await logError(`[CacheRebuild] Error processing asset ${asset.path}`, error);
+        result.assetsPending++;
+      }
+    }
+    for (const [shard, cache] of assetCacheShards) {
+      await plugin.saveData(`assets-${shard}.json`, cache);
+    }
+    await logInfo(`[CacheRebuild] Assets: ${result.assetsMatched} matched, ${result.assetsPending} pending`);
+    result.success = true;
+    result.duration = Date.now() - startTime;
+    onProgress?.({
+      phase: "complete",
+      current: 100,
+      total: 100,
+      message: "Cache rebuild complete!",
+      docsMatched: result.docsMatched,
+      docsPending: result.docsPending,
+      assetsMatched: result.assetsMatched,
+      assetsPending: result.assetsPending
+    });
+    await logInfo(`[CacheRebuild] Complete: ${result.docsMatched} docs, ${result.assetsMatched} assets matched in ${result.duration}ms`);
+  } catch (error) {
+    result.success = false;
+    result.error = error instanceof Error ? error.message : String(error);
+    result.duration = Date.now() - startTime;
+    await logError("[CacheRebuild] Failed", error);
+    onProgress?.({
+      phase: "error",
+      current: 0,
+      total: 100,
+      message: `Error: ${result.error}`,
+      docsMatched: result.docsMatched,
+      docsPending: result.docsPending,
+      assetsMatched: result.assetsMatched,
+      assetsPending: result.assetsPending
+    });
+  }
+  await flushAllLogs();
+  return result;
+}
+
 // src/index.ts
 var LifeosSyncPlugin = class extends import_siyuan.Plugin {
   constructor() {
@@ -2578,7 +3577,7 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
   async onload() {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.4.3");
+    await logInfo("plugin loaded v0.4.5");
     await initDeviceManager();
     this.statusBarEl = createStatusBar(this);
     this.addTopBar({
@@ -2634,8 +3633,31 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
         void this.toggleAutoSync();
       }
     });
+    menu.addSeparator();
     menu.addItem({
-      label: "\u{1F504} Clear cache & full sync",
+      label: "\u{1F4CA} Sync Dashboard",
+      icon: "iconGraph",
+      click: () => {
+        void openSyncDashboard(this);
+      }
+    });
+    menu.addItem({
+      label: "\u{1F4DC} Sync History",
+      icon: "iconHistory",
+      click: () => {
+        void openSyncHistoryDialog(this);
+      }
+    });
+    menu.addSeparator();
+    menu.addItem({
+      label: "\u{1F527} Rebuild Cache from GitHub",
+      icon: "iconDownload",
+      click: () => {
+        void this.rebuildCache();
+      }
+    });
+    menu.addItem({
+      label: "\u26A0\uFE0F Clear Cache & Full Sync",
       icon: "iconTrashcan",
       click: () => {
         void this.clearCacheAndFullSync();
@@ -2695,7 +3717,7 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.4.3</span>
+        <span style="opacity:0.6; font-size:12px;">v0.4.5</span>
       </div>
 
       <h4 style="margin-top:0;margin-bottom:8px;">\u{1F4F1} Device Settings</h4>
@@ -2961,9 +3983,19 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       await logError("Settings not loaded");
       return;
     }
+    const firstConfirm = await this.showClearCacheWarningDialog();
+    if (!firstConfirm) {
+      await logInfo("[ClearCache] Cancelled at first confirmation");
+      return;
+    }
+    const secondConfirm = await this.showClearCacheTypeConfirmDialog();
+    if (!secondConfirm) {
+      await logInfo("[ClearCache] Cancelled at second confirmation");
+      return;
+    }
     try {
       updateStatusBar(this.statusBarEl, "Clearing cache...");
-      await logInfo("[ClearCache] Starting to clear all cache");
+      await logInfo("[ClearCache] Starting to clear all cache (user confirmed twice)");
       const { clearAllCache: clearAllCache2 } = await Promise.resolve().then(() => (init_cache_manager(), cache_manager_exports));
       await clearAllCache2(this);
       await logInfo("[ClearCache] All cache cleared successfully");
@@ -2985,6 +4017,177 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       await logError(`[ClearCache] Failed: ${errorMsg}`);
       updateStatusBar(this.statusBarEl, `Clear cache failed: ${errorMsg}`);
     }
+  }
+  /**
+   * 显示清除缓存的第一次警告对话框
+   */
+  showClearCacheWarningDialog() {
+    return new Promise((resolve) => {
+      const dialogId = `clear-cache-warning-${Date.now()}`;
+      const overlay = document.createElement("div");
+      overlay.id = dialogId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+      const card = document.createElement("div");
+      card.style.cssText = `
+        width: 480px;
+        max-width: 95vw;
+        background: var(--b3-theme-surface, #fff);
+        color: var(--b3-theme-on-surface, #000);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        overflow: hidden;
+      `;
+      card.innerHTML = `
+        <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd); background: var(--b3-card-warning-background, #fff3cd);">
+          <h2 style="margin: 0; font-size: 18px; color: var(--b3-card-warning-color, #856404);">
+            \u26A0\uFE0F Dangerous Operation
+          </h2>
+        </div>
+        <div style="padding: 20px;">
+          <p style="margin: 0 0 16px 0; font-weight: bold;">
+            Clearing cache will have the following effects:
+          </p>
+          <ul style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.8;">
+            <li>Delete all local cache files</li>
+            <li style="color: var(--b3-card-error-color, red); font-weight: bold;">
+              Through SiYuan sync, cache deletion will propagate to ALL devices!
+            </li>
+            <li>Next sync will upload ALL files (may take hours)</li>
+            <li>Risk of overwriting newer remote changes</li>
+          </ul>
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+            <strong>\u{1F4A1} Suggestion:</strong> Use "Rebuild Cache from GitHub" instead.
+            <br><span style="font-size: 12px; opacity: 0.8;">It rebuilds cache without deleting data, much safer and faster.</span>
+          </div>
+        </div>
+        <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: flex-end; gap: 12px;">
+          <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
+          <button class="b3-button" style="background: var(--b3-card-warning-color, #856404); color: white;" id="${dialogId}-continue">
+            I understand the risks, continue
+          </button>
+        </div>
+      `;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      const cleanup = () => overlay.remove();
+      document.getElementById(`${dialogId}-cancel`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(false);
+      });
+      document.getElementById(`${dialogId}-continue`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(true);
+      });
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) {
+          cleanup();
+          resolve(false);
+        }
+      });
+    });
+  }
+  /**
+   * 显示清除缓存的第二次确认对话框（需要输入 DELETE）
+   */
+  showClearCacheTypeConfirmDialog() {
+    return new Promise((resolve) => {
+      const dialogId = `clear-cache-confirm-${Date.now()}`;
+      const overlay = document.createElement("div");
+      overlay.id = dialogId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+      const card = document.createElement("div");
+      card.style.cssText = `
+        width: 400px;
+        max-width: 95vw;
+        background: var(--b3-theme-surface, #fff);
+        color: var(--b3-theme-on-surface, #000);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        overflow: hidden;
+      `;
+      card.innerHTML = `
+        <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd); background: var(--b3-card-error-background, #f8d7da);">
+          <h2 style="margin: 0; font-size: 18px; color: var(--b3-card-error-color, #721c24);">
+            \u26A0\uFE0F Final Confirmation
+          </h2>
+        </div>
+        <div style="padding: 20px;">
+          <p style="margin: 0 0 16px 0;">
+            Type <strong style="font-family: monospace; background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 2px 8px; border-radius: 4px;">DELETE</strong> to confirm clearing all cache:
+          </p>
+          <input
+            type="text"
+            class="b3-text-field fn__block"
+            id="${dialogId}-input"
+            placeholder="Type DELETE here"
+            autocomplete="off"
+            style="font-family: monospace; text-transform: uppercase;"
+          >
+          <div id="${dialogId}-error" style="color: var(--b3-card-error-color, red); font-size: 12px; margin-top: 8px; display: none;">
+            Please type DELETE to confirm
+          </div>
+        </div>
+        <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: flex-end; gap: 12px;">
+          <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
+          <button class="b3-button" style="background: var(--b3-card-error-color, #dc3545); color: white;" id="${dialogId}-confirm">
+            Clear All Cache
+          </button>
+        </div>
+      `;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      const cleanup = () => overlay.remove();
+      const inputEl = document.getElementById(`${dialogId}-input`);
+      const errorEl = document.getElementById(`${dialogId}-error`);
+      setTimeout(() => inputEl?.focus(), 100);
+      document.getElementById(`${dialogId}-cancel`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(false);
+      });
+      document.getElementById(`${dialogId}-confirm`)?.addEventListener("click", () => {
+        const value = inputEl?.value?.trim()?.toUpperCase();
+        if (value === "DELETE") {
+          cleanup();
+          resolve(true);
+        } else {
+          errorEl.style.display = "block";
+          inputEl?.focus();
+        }
+      });
+      inputEl?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const value = inputEl?.value?.trim()?.toUpperCase();
+          if (value === "DELETE") {
+            cleanup();
+            resolve(true);
+          } else {
+            errorEl.style.display = "block";
+          }
+        }
+      });
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) {
+          cleanup();
+          resolve(false);
+        }
+      });
+    });
   }
   async toggleAutoSync() {
     if (!this.settings) {
@@ -3010,6 +4213,240 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       await logInfo("Auto sync disabled");
       updateStatusBar(this.statusBarEl, "Auto sync: OFF");
     }
+  }
+  /**
+   * 从 GitHub 重建缓存
+   */
+  async rebuildCache() {
+    if (!this.settings) {
+      await logError("Settings not loaded");
+      return;
+    }
+    const confirmed = await this.showRebuildCacheConfirmDialog();
+    if (!confirmed) {
+      await logInfo("[CacheRebuild] Cancelled by user");
+      return;
+    }
+    const wasAutoSyncEnabled = this.autoSyncScheduler !== null;
+    if (this.autoSyncScheduler) {
+      await this.autoSyncScheduler.stop();
+      this.autoSyncScheduler = null;
+      await logInfo("[CacheRebuild] Auto sync paused during rebuild");
+    }
+    const progressDialog = this.createRebuildProgressDialog();
+    document.body.appendChild(progressDialog.overlay);
+    try {
+      const result = await rebuildCacheFromGitHub(
+        this,
+        this.settings,
+        (progress) => {
+          progressDialog.update(progress);
+        }
+      );
+      if (result.success) {
+        progressDialog.showComplete(result);
+        await logInfo(`[CacheRebuild] Complete: ${result.docsMatched} docs, ${result.assetsMatched} assets matched`);
+      } else {
+        progressDialog.showError(result.error || "Unknown error");
+        await logError(`[CacheRebuild] Failed: ${result.error}`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      progressDialog.showError(errorMsg);
+      await logError(`[CacheRebuild] Error: ${errorMsg}`);
+    }
+    progressDialog.onClose = async () => {
+      if (wasAutoSyncEnabled && this.settings?.autoSync.enabled) {
+        this.autoSyncScheduler = new AutoSyncScheduler(
+          this,
+          this.settings,
+          (message) => updateStatusBar(this.statusBarEl, message),
+          this.statusBarEl
+        );
+        await this.autoSyncScheduler.start();
+        await logInfo("[CacheRebuild] Auto sync resumed");
+      }
+    };
+  }
+  /**
+   * 显示重建缓存确认对话框
+   */
+  showRebuildCacheConfirmDialog() {
+    return new Promise((resolve) => {
+      const dialogId = `rebuild-cache-confirm-${Date.now()}`;
+      const overlay = document.createElement("div");
+      overlay.id = dialogId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+      const card = document.createElement("div");
+      card.style.cssText = `
+        width: 480px;
+        max-width: 95vw;
+        background: var(--b3-theme-surface, #fff);
+        color: var(--b3-theme-on-surface, #000);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        overflow: hidden;
+      `;
+      card.innerHTML = `
+        <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd);">
+          <h2 style="margin: 0; font-size: 18px;">
+            \u{1F527} Rebuild Cache from GitHub
+          </h2>
+        </div>
+        <div style="padding: 20px;">
+          <p style="margin: 0 0 16px 0;">
+            This will rebuild your local cache by comparing local files with GitHub:
+          </p>
+          <ul style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.8;">
+            <li>Fetch file list from GitHub (one API call)</li>
+            <li>Compare each local file with remote SHA</li>
+            <li>Mark matching files as "already synced"</li>
+            <li>Files that differ will be uploaded on next sync</li>
+          </ul>
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px;">
+            <strong>Note:</strong> Auto sync will be paused during rebuild.
+            <br><span style="font-size: 12px; opacity: 0.8;">This may take a few minutes for large repositories.</span>
+          </div>
+        </div>
+        <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: flex-end; gap: 12px;">
+          <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
+          <button class="b3-button b3-button--primary" id="${dialogId}-start">Start Rebuild</button>
+        </div>
+      `;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      const cleanup = () => overlay.remove();
+      document.getElementById(`${dialogId}-cancel`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(false);
+      });
+      document.getElementById(`${dialogId}-start`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(true);
+      });
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) {
+          cleanup();
+          resolve(false);
+        }
+      });
+    });
+  }
+  /**
+   * 创建重建缓存进度对话框
+   */
+  createRebuildProgressDialog() {
+    const dialogId = `rebuild-progress-${Date.now()}`;
+    const overlay = document.createElement("div");
+    overlay.id = dialogId;
+    overlay.style.cssText = `
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+    const card = document.createElement("div");
+    card.style.cssText = `
+      width: 500px;
+      max-width: 95vw;
+      background: var(--b3-theme-surface, #fff);
+      color: var(--b3-theme-on-surface, #000);
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+      overflow: hidden;
+    `;
+    card.innerHTML = `
+      <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd);">
+        <h2 style="margin: 0; font-size: 18px;">\u{1F527} Rebuilding Cache...</h2>
+      </div>
+      <div style="padding: 20px;">
+        <div id="${dialogId}-status" style="margin-bottom: 16px; font-weight: 500;">
+          Initializing...
+        </div>
+        <div style="background: var(--b3-theme-surface-lighter, #eee); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 16px;">
+          <div id="${dialogId}-progress-bar" style="background: var(--b3-theme-primary, #4285f4); height: 100%; width: 0%; transition: width 0.3s;"></div>
+        </div>
+        <div id="${dialogId}-stats" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px;">
+            <div style="opacity: 0.7; font-size: 11px;">Documents</div>
+            <div><span id="${dialogId}-docs-matched" style="color: var(--b3-card-success-color, green);">0</span> matched, <span id="${dialogId}-docs-pending" style="color: var(--b3-card-warning-color, orange);">0</span> pending</div>
+          </div>
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px;">
+            <div style="opacity: 0.7; font-size: 11px;">Assets</div>
+            <div><span id="${dialogId}-assets-matched" style="color: var(--b3-card-success-color, green);">0</span> matched, <span id="${dialogId}-assets-pending" style="color: var(--b3-card-warning-color, orange);">0</span> pending</div>
+          </div>
+        </div>
+      </div>
+      <div id="${dialogId}-footer" style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: none; justify-content: flex-end;">
+        <button class="b3-button b3-button--primary" id="${dialogId}-close">Close</button>
+      </div>
+    `;
+    overlay.appendChild(card);
+    let onCloseCallback;
+    const result = {
+      overlay,
+      update: (progress) => {
+        const statusEl = document.getElementById(`${dialogId}-status`);
+        const progressBar = document.getElementById(`${dialogId}-progress-bar`);
+        const docsMatched = document.getElementById(`${dialogId}-docs-matched`);
+        const docsPending = document.getElementById(`${dialogId}-docs-pending`);
+        const assetsMatched = document.getElementById(`${dialogId}-assets-matched`);
+        const assetsPending = document.getElementById(`${dialogId}-assets-pending`);
+        if (statusEl) statusEl.textContent = progress.message;
+        if (progressBar) progressBar.style.width = `${progress.current}%`;
+        if (docsMatched) docsMatched.textContent = String(progress.docsMatched);
+        if (docsPending) docsPending.textContent = String(progress.docsPending);
+        if (assetsMatched) assetsMatched.textContent = String(progress.assetsMatched);
+        if (assetsPending) assetsPending.textContent = String(progress.assetsPending);
+      },
+      showComplete: (rebuildResult) => {
+        const statusEl = document.getElementById(`${dialogId}-status`);
+        const footerEl = document.getElementById(`${dialogId}-footer`);
+        const progressBar = document.getElementById(`${dialogId}-progress-bar`);
+        if (statusEl) {
+          statusEl.innerHTML = `
+            <span style="color: var(--b3-card-success-color, green);">\u2705 Cache rebuild complete!</span>
+            <br><span style="font-size: 12px; opacity: 0.7;">Duration: ${(rebuildResult.duration / 1e3).toFixed(1)}s</span>
+            ${rebuildResult.truncated ? '<br><span style="color: var(--b3-card-warning-color, orange); font-size: 12px;">\u26A0\uFE0F File tree was truncated (repository may be too large)</span>' : ""}
+          `;
+        }
+        if (progressBar) progressBar.style.width = "100%";
+        if (footerEl) footerEl.style.display = "flex";
+        document.getElementById(`${dialogId}-close`)?.addEventListener("click", async () => {
+          overlay.remove();
+          if (onCloseCallback) await onCloseCallback();
+        });
+      },
+      showError: (error) => {
+        const statusEl = document.getElementById(`${dialogId}-status`);
+        const footerEl = document.getElementById(`${dialogId}-footer`);
+        const progressBar = document.getElementById(`${dialogId}-progress-bar`);
+        if (statusEl) {
+          statusEl.innerHTML = `<span style="color: var(--b3-card-error-color, red);">\u274C Error: ${error}</span>`;
+        }
+        if (progressBar) progressBar.style.background = "var(--b3-card-error-color, red)";
+        if (footerEl) footerEl.style.display = "flex";
+        document.getElementById(`${dialogId}-close`)?.addEventListener("click", async () => {
+          overlay.remove();
+          if (onCloseCallback) await onCloseCallback();
+        });
+      },
+      set onClose(callback) {
+        onCloseCallback = callback;
+      }
+    };
+    return result;
   }
   async forceSync() {
     if (!this.settings) {

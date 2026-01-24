@@ -10,6 +10,8 @@ import { syncAllAssets } from "./assets-sync";
 import { AutoSyncScheduler } from "./auto-sync-scheduler";
 import { initDeviceManager, getDeviceId, getDeviceName, setDeviceName, regenerateDeviceId, getShortDeviceId } from "./device-manager";
 import { performForceSyncWithLock } from "./incremental-sync";
+import { openSyncDashboard, openSyncHistoryDialog } from "./sync-dashboard";
+import { rebuildCacheFromGitHub, type RebuildProgress } from "./cache-rebuild";
 
 export default class LifeosSyncPlugin extends Plugin {
   private settings: Settings | null = null;
@@ -19,7 +21,7 @@ export default class LifeosSyncPlugin extends Plugin {
   async onload(): Promise<void> {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.4.3");
+    await logInfo("plugin loaded v0.4.5");
 
     // 初始化设备管理器
     await initDeviceManager();
@@ -88,8 +90,31 @@ export default class LifeosSyncPlugin extends Plugin {
         void this.toggleAutoSync();
       },
     });
+    menu.addSeparator();
     menu.addItem({
-      label: "🔄 Clear cache & full sync",
+      label: "📊 Sync Dashboard",
+      icon: "iconGraph",
+      click: () => {
+        void openSyncDashboard(this);
+      },
+    });
+    menu.addItem({
+      label: "📜 Sync History",
+      icon: "iconHistory",
+      click: () => {
+        void openSyncHistoryDialog(this);
+      },
+    });
+    menu.addSeparator();
+    menu.addItem({
+      label: "🔧 Rebuild Cache from GitHub",
+      icon: "iconDownload",
+      click: () => {
+        void this.rebuildCache();
+      },
+    });
+    menu.addItem({
+      label: "⚠️ Clear Cache & Full Sync",
       icon: "iconTrashcan",
       click: () => {
         void this.clearCacheAndFullSync();
@@ -154,7 +179,7 @@ export default class LifeosSyncPlugin extends Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.4.3</span>
+        <span style="opacity:0.6; font-size:12px;">v0.4.5</span>
       </div>
 
       <h4 style="margin-top:0;margin-bottom:8px;">📱 Device Settings</h4>
@@ -453,9 +478,30 @@ export default class LifeosSyncPlugin extends Plugin {
       return;
     }
 
+    // ========================================================================
+    // Two-step confirmation for dangerous operation
+    // ========================================================================
+
+    // Step 1: First warning dialog
+    const firstConfirm = await this.showClearCacheWarningDialog();
+    if (!firstConfirm) {
+      await logInfo("[ClearCache] Cancelled at first confirmation");
+      return;
+    }
+
+    // Step 2: Type "DELETE" confirmation
+    const secondConfirm = await this.showClearCacheTypeConfirmDialog();
+    if (!secondConfirm) {
+      await logInfo("[ClearCache] Cancelled at second confirmation");
+      return;
+    }
+
+    // ========================================================================
+    // Execute clear cache
+    // ========================================================================
     try {
       updateStatusBar(this.statusBarEl, "Clearing cache...");
-      await logInfo("[ClearCache] Starting to clear all cache");
+      await logInfo("[ClearCache] Starting to clear all cache (user confirmed twice)");
 
       // Import clearAllCache function
       const { clearAllCache } = await import("./cache-manager");
@@ -487,6 +533,197 @@ export default class LifeosSyncPlugin extends Plugin {
     }
   }
 
+  /**
+   * 显示清除缓存的第一次警告对话框
+   */
+  private showClearCacheWarningDialog(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const dialogId = `clear-cache-warning-${Date.now()}`;
+      const overlay = document.createElement("div");
+      overlay.id = dialogId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+
+      const card = document.createElement("div");
+      card.style.cssText = `
+        width: 480px;
+        max-width: 95vw;
+        background: var(--b3-theme-surface, #fff);
+        color: var(--b3-theme-on-surface, #000);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        overflow: hidden;
+      `;
+
+      card.innerHTML = `
+        <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd); background: var(--b3-card-warning-background, #fff3cd);">
+          <h2 style="margin: 0; font-size: 18px; color: var(--b3-card-warning-color, #856404);">
+            ⚠️ Dangerous Operation
+          </h2>
+        </div>
+        <div style="padding: 20px;">
+          <p style="margin: 0 0 16px 0; font-weight: bold;">
+            Clearing cache will have the following effects:
+          </p>
+          <ul style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.8;">
+            <li>Delete all local cache files</li>
+            <li style="color: var(--b3-card-error-color, red); font-weight: bold;">
+              Through SiYuan sync, cache deletion will propagate to ALL devices!
+            </li>
+            <li>Next sync will upload ALL files (may take hours)</li>
+            <li>Risk of overwriting newer remote changes</li>
+          </ul>
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+            <strong>💡 Suggestion:</strong> Use "Rebuild Cache from GitHub" instead.
+            <br><span style="font-size: 12px; opacity: 0.8;">It rebuilds cache without deleting data, much safer and faster.</span>
+          </div>
+        </div>
+        <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: flex-end; gap: 12px;">
+          <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
+          <button class="b3-button" style="background: var(--b3-card-warning-color, #856404); color: white;" id="${dialogId}-continue">
+            I understand the risks, continue
+          </button>
+        </div>
+      `;
+
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const cleanup = () => overlay.remove();
+
+      document.getElementById(`${dialogId}-cancel`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(false);
+      });
+
+      document.getElementById(`${dialogId}-continue`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(true);
+      });
+
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) {
+          cleanup();
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  /**
+   * 显示清除缓存的第二次确认对话框（需要输入 DELETE）
+   */
+  private showClearCacheTypeConfirmDialog(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const dialogId = `clear-cache-confirm-${Date.now()}`;
+      const overlay = document.createElement("div");
+      overlay.id = dialogId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+
+      const card = document.createElement("div");
+      card.style.cssText = `
+        width: 400px;
+        max-width: 95vw;
+        background: var(--b3-theme-surface, #fff);
+        color: var(--b3-theme-on-surface, #000);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        overflow: hidden;
+      `;
+
+      card.innerHTML = `
+        <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd); background: var(--b3-card-error-background, #f8d7da);">
+          <h2 style="margin: 0; font-size: 18px; color: var(--b3-card-error-color, #721c24);">
+            ⚠️ Final Confirmation
+          </h2>
+        </div>
+        <div style="padding: 20px;">
+          <p style="margin: 0 0 16px 0;">
+            Type <strong style="font-family: monospace; background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 2px 8px; border-radius: 4px;">DELETE</strong> to confirm clearing all cache:
+          </p>
+          <input
+            type="text"
+            class="b3-text-field fn__block"
+            id="${dialogId}-input"
+            placeholder="Type DELETE here"
+            autocomplete="off"
+            style="font-family: monospace; text-transform: uppercase;"
+          >
+          <div id="${dialogId}-error" style="color: var(--b3-card-error-color, red); font-size: 12px; margin-top: 8px; display: none;">
+            Please type DELETE to confirm
+          </div>
+        </div>
+        <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: flex-end; gap: 12px;">
+          <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
+          <button class="b3-button" style="background: var(--b3-card-error-color, #dc3545); color: white;" id="${dialogId}-confirm">
+            Clear All Cache
+          </button>
+        </div>
+      `;
+
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const cleanup = () => overlay.remove();
+      const inputEl = document.getElementById(`${dialogId}-input`) as HTMLInputElement;
+      const errorEl = document.getElementById(`${dialogId}-error`) as HTMLElement;
+
+      // Focus input
+      setTimeout(() => inputEl?.focus(), 100);
+
+      document.getElementById(`${dialogId}-cancel`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(false);
+      });
+
+      document.getElementById(`${dialogId}-confirm`)?.addEventListener("click", () => {
+        const value = inputEl?.value?.trim()?.toUpperCase();
+        if (value === "DELETE") {
+          cleanup();
+          resolve(true);
+        } else {
+          errorEl.style.display = "block";
+          inputEl?.focus();
+        }
+      });
+
+      // Allow Enter key to confirm
+      inputEl?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          const value = inputEl?.value?.trim()?.toUpperCase();
+          if (value === "DELETE") {
+            cleanup();
+            resolve(true);
+          } else {
+            errorEl.style.display = "block";
+          }
+        }
+      });
+
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) {
+          cleanup();
+          resolve(false);
+        }
+      });
+    });
+  }
+
   private async toggleAutoSync(): Promise<void> {
     if (!this.settings) {
       return;
@@ -515,6 +752,277 @@ export default class LifeosSyncPlugin extends Plugin {
       await logInfo("Auto sync disabled");
       updateStatusBar(this.statusBarEl, "Auto sync: OFF");
     }
+  }
+
+  /**
+   * 从 GitHub 重建缓存
+   */
+  private async rebuildCache(): Promise<void> {
+    if (!this.settings) {
+      await logError("Settings not loaded");
+      return;
+    }
+
+    // Show confirmation dialog
+    const confirmed = await this.showRebuildCacheConfirmDialog();
+    if (!confirmed) {
+      await logInfo("[CacheRebuild] Cancelled by user");
+      return;
+    }
+
+    // Pause auto sync during rebuild
+    const wasAutoSyncEnabled = this.autoSyncScheduler !== null;
+    if (this.autoSyncScheduler) {
+      await this.autoSyncScheduler.stop();
+      this.autoSyncScheduler = null;
+      await logInfo("[CacheRebuild] Auto sync paused during rebuild");
+    }
+
+    // Show progress dialog
+    const progressDialog = this.createRebuildProgressDialog();
+    document.body.appendChild(progressDialog.overlay);
+
+    try {
+      const result = await rebuildCacheFromGitHub(
+        this,
+        this.settings,
+        (progress: RebuildProgress) => {
+          progressDialog.update(progress);
+        }
+      );
+
+      if (result.success) {
+        progressDialog.showComplete(result);
+        await logInfo(`[CacheRebuild] Complete: ${result.docsMatched} docs, ${result.assetsMatched} assets matched`);
+      } else {
+        progressDialog.showError(result.error || "Unknown error");
+        await logError(`[CacheRebuild] Failed: ${result.error}`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      progressDialog.showError(errorMsg);
+      await logError(`[CacheRebuild] Error: ${errorMsg}`);
+    }
+
+    // Restore auto sync after rebuild (user can close dialog to continue)
+    progressDialog.onClose = async () => {
+      if (wasAutoSyncEnabled && this.settings?.autoSync.enabled) {
+        this.autoSyncScheduler = new AutoSyncScheduler(
+          this,
+          this.settings,
+          (message) => updateStatusBar(this.statusBarEl, message),
+          this.statusBarEl
+        );
+        await this.autoSyncScheduler.start();
+        await logInfo("[CacheRebuild] Auto sync resumed");
+      }
+    };
+  }
+
+  /**
+   * 显示重建缓存确认对话框
+   */
+  private showRebuildCacheConfirmDialog(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const dialogId = `rebuild-cache-confirm-${Date.now()}`;
+      const overlay = document.createElement("div");
+      overlay.id = dialogId;
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+
+      const card = document.createElement("div");
+      card.style.cssText = `
+        width: 480px;
+        max-width: 95vw;
+        background: var(--b3-theme-surface, #fff);
+        color: var(--b3-theme-on-surface, #000);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        overflow: hidden;
+      `;
+
+      card.innerHTML = `
+        <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd);">
+          <h2 style="margin: 0; font-size: 18px;">
+            🔧 Rebuild Cache from GitHub
+          </h2>
+        </div>
+        <div style="padding: 20px;">
+          <p style="margin: 0 0 16px 0;">
+            This will rebuild your local cache by comparing local files with GitHub:
+          </p>
+          <ul style="margin: 0 0 16px 0; padding-left: 20px; line-height: 1.8;">
+            <li>Fetch file list from GitHub (one API call)</li>
+            <li>Compare each local file with remote SHA</li>
+            <li>Mark matching files as "already synced"</li>
+            <li>Files that differ will be uploaded on next sync</li>
+          </ul>
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px;">
+            <strong>Note:</strong> Auto sync will be paused during rebuild.
+            <br><span style="font-size: 12px; opacity: 0.8;">This may take a few minutes for large repositories.</span>
+          </div>
+        </div>
+        <div style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: flex; justify-content: flex-end; gap: 12px;">
+          <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
+          <button class="b3-button b3-button--primary" id="${dialogId}-start">Start Rebuild</button>
+        </div>
+      `;
+
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const cleanup = () => overlay.remove();
+
+      document.getElementById(`${dialogId}-cancel`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(false);
+      });
+
+      document.getElementById(`${dialogId}-start`)?.addEventListener("click", () => {
+        cleanup();
+        resolve(true);
+      });
+
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) {
+          cleanup();
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  /**
+   * 创建重建缓存进度对话框
+   */
+  private createRebuildProgressDialog(): {
+    overlay: HTMLElement;
+    update: (progress: RebuildProgress) => void;
+    showComplete: (result: any) => void;
+    showError: (error: string) => void;
+    onClose?: () => Promise<void>;
+  } {
+    const dialogId = `rebuild-progress-${Date.now()}`;
+    const overlay = document.createElement("div");
+    overlay.id = dialogId;
+    overlay.style.cssText = `
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      width: 500px;
+      max-width: 95vw;
+      background: var(--b3-theme-surface, #fff);
+      color: var(--b3-theme-on-surface, #000);
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+      overflow: hidden;
+    `;
+
+    card.innerHTML = `
+      <div style="padding: 20px; border-bottom: 1px solid var(--b3-border-color, #ddd);">
+        <h2 style="margin: 0; font-size: 18px;">🔧 Rebuilding Cache...</h2>
+      </div>
+      <div style="padding: 20px;">
+        <div id="${dialogId}-status" style="margin-bottom: 16px; font-weight: 500;">
+          Initializing...
+        </div>
+        <div style="background: var(--b3-theme-surface-lighter, #eee); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 16px;">
+          <div id="${dialogId}-progress-bar" style="background: var(--b3-theme-primary, #4285f4); height: 100%; width: 0%; transition: width 0.3s;"></div>
+        </div>
+        <div id="${dialogId}-stats" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px;">
+            <div style="opacity: 0.7; font-size: 11px;">Documents</div>
+            <div><span id="${dialogId}-docs-matched" style="color: var(--b3-card-success-color, green);">0</span> matched, <span id="${dialogId}-docs-pending" style="color: var(--b3-card-warning-color, orange);">0</span> pending</div>
+          </div>
+          <div style="background: var(--b3-theme-surface-lighter, #f5f5f5); padding: 12px; border-radius: 8px;">
+            <div style="opacity: 0.7; font-size: 11px;">Assets</div>
+            <div><span id="${dialogId}-assets-matched" style="color: var(--b3-card-success-color, green);">0</span> matched, <span id="${dialogId}-assets-pending" style="color: var(--b3-card-warning-color, orange);">0</span> pending</div>
+          </div>
+        </div>
+      </div>
+      <div id="${dialogId}-footer" style="padding: 16px 20px; border-top: 1px solid var(--b3-border-color, #ddd); display: none; justify-content: flex-end;">
+        <button class="b3-button b3-button--primary" id="${dialogId}-close">Close</button>
+      </div>
+    `;
+
+    overlay.appendChild(card);
+
+    let onCloseCallback: (() => Promise<void>) | undefined;
+
+    const result = {
+      overlay,
+      update: (progress: RebuildProgress) => {
+        const statusEl = document.getElementById(`${dialogId}-status`);
+        const progressBar = document.getElementById(`${dialogId}-progress-bar`);
+        const docsMatched = document.getElementById(`${dialogId}-docs-matched`);
+        const docsPending = document.getElementById(`${dialogId}-docs-pending`);
+        const assetsMatched = document.getElementById(`${dialogId}-assets-matched`);
+        const assetsPending = document.getElementById(`${dialogId}-assets-pending`);
+
+        if (statusEl) statusEl.textContent = progress.message;
+        if (progressBar) progressBar.style.width = `${progress.current}%`;
+        if (docsMatched) docsMatched.textContent = String(progress.docsMatched);
+        if (docsPending) docsPending.textContent = String(progress.docsPending);
+        if (assetsMatched) assetsMatched.textContent = String(progress.assetsMatched);
+        if (assetsPending) assetsPending.textContent = String(progress.assetsPending);
+      },
+      showComplete: (rebuildResult: any) => {
+        const statusEl = document.getElementById(`${dialogId}-status`);
+        const footerEl = document.getElementById(`${dialogId}-footer`);
+        const progressBar = document.getElementById(`${dialogId}-progress-bar`);
+
+        if (statusEl) {
+          statusEl.innerHTML = `
+            <span style="color: var(--b3-card-success-color, green);">✅ Cache rebuild complete!</span>
+            <br><span style="font-size: 12px; opacity: 0.7;">Duration: ${(rebuildResult.duration / 1000).toFixed(1)}s</span>
+            ${rebuildResult.truncated ? '<br><span style="color: var(--b3-card-warning-color, orange); font-size: 12px;">⚠️ File tree was truncated (repository may be too large)</span>' : ''}
+          `;
+        }
+        if (progressBar) progressBar.style.width = "100%";
+        if (footerEl) footerEl.style.display = "flex";
+
+        document.getElementById(`${dialogId}-close`)?.addEventListener("click", async () => {
+          overlay.remove();
+          if (onCloseCallback) await onCloseCallback();
+        });
+      },
+      showError: (error: string) => {
+        const statusEl = document.getElementById(`${dialogId}-status`);
+        const footerEl = document.getElementById(`${dialogId}-footer`);
+        const progressBar = document.getElementById(`${dialogId}-progress-bar`);
+
+        if (statusEl) {
+          statusEl.innerHTML = `<span style="color: var(--b3-card-error-color, red);">❌ Error: ${error}</span>`;
+        }
+        if (progressBar) progressBar.style.background = "var(--b3-card-error-color, red)";
+        if (footerEl) footerEl.style.display = "flex";
+
+        document.getElementById(`${dialogId}-close`)?.addEventListener("click", async () => {
+          overlay.remove();
+          if (onCloseCallback) await onCloseCallback();
+        });
+      },
+      set onClose(callback: (() => Promise<void>) | undefined) {
+        onCloseCallback = callback;
+      }
+    };
+
+    return result;
   }
 
   private async forceSync(): Promise<void> {

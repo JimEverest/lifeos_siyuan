@@ -146,3 +146,76 @@ export interface AssetMetadata {
   size: number;
   mtime: number;                 // 文件修改时间戳
 }
+
+// ============================================================================
+// Sync History Types (同步历史)
+// ============================================================================
+
+export interface SyncHistoryRecord {
+  id: string;                    // 唯一ID (timestamp-deviceId-tabId)
+  timestamp: number;             // 同步开始时间戳
+  deviceId: string;              // 设备ID
+  deviceName: string;            // 设备名称（含Tab标识，如 "Browser-192.168.1.1 #3"）
+  tabId?: string;                // Tab会话ID（仅浏览器环境）
+  tabName?: string;              // Tab名称（如 "#3"）
+  triggerType: 'auto' | 'manual' | 'force';  // 触发类型
+
+  // 同步结果
+  docsScanned: number;
+  docsChanged: number;
+  docsUploaded: number;
+  docsSkipped: number;
+  docsFailed: number;
+
+  assetsScanned: number;
+  assetsChanged: number;
+  assetsUploaded: number;
+  assetsSkipped: number;
+  assetsFailed: number;
+
+  duration: number;              // 同步耗时（毫秒）
+  success: boolean;              // 是否成功
+  skippedReason?: string;        // 跳过原因（如被锁阻止）
+  errorMessage?: string;         // 错误信息
+}
+
+export interface SyncHistoryData {
+  records: SyncHistoryRecord[];
+  maxRecords: number;            // 最大保存记录数
+  lastUpdated: number;           // 最后更新时间
+}
+
+// ============================================================================
+// Sync Statistics Types (同步统计)
+// ============================================================================
+
+export interface SyncStatistics {
+  // 累计统计
+  totalDocsUploaded: number;
+  totalAssetsUploaded: number;
+  totalSyncCount: number;
+  totalSyncTime: number;         // 累计同步时间（毫秒）
+
+  // 缓存统计
+  cacheHits: number;
+  cacheMisses: number;
+
+  // 设备统计
+  deviceSyncStats: {
+    [deviceId: string]: {
+      deviceName: string;
+      lastSyncTime: number;
+      syncCount: number;
+    };
+  };
+
+  // 最近统计（过去24小时）
+  recentDocsUploaded: number;
+  recentAssetsUploaded: number;
+  recentSyncCount: number;
+
+  // 元数据
+  firstSyncTime: number;
+  lastSyncTime: number;
+  lastUpdated: number;
+}

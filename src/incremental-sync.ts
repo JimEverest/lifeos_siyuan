@@ -27,6 +27,7 @@ import {
   showSyncErrorStatus,
   showForceSyncStatus
 } from "./ui";
+import { addSyncRecord } from "./sync-history";
 
 // ============================================================================
 // 文档增量扫描
@@ -504,6 +505,10 @@ export async function performIncrementalSyncWithLock(
     const reason = lockResult.reason || "Unknown reason";
     await logInfo(`[IncrementalSync] Sync skipped: ${reason}`);
     showSyncSkippedStatus(statusBarEl, reason);
+
+    // 记录跳过的同步
+    await addSyncRecord(plugin, null, 'auto', reason);
+
     return { executed: false, skippedReason: reason };
   }
 
@@ -516,12 +521,19 @@ export async function performIncrementalSyncWithLock(
     const timeSeconds = result.totalTime / 1000;
     showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
 
+    // 记录成功的同步
+    await addSyncRecord(plugin, result, 'auto');
+
     return { executed: true, result };
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     await logError(`[IncrementalSync] Sync failed: ${errorMsg}`);
     showSyncErrorStatus(statusBarEl, errorMsg);
+
+    // 记录失败的同步
+    await addSyncRecord(plugin, null, 'auto', undefined, errorMsg);
+
     return { executed: false, error: errorMsg };
 
   } finally {
@@ -568,12 +580,19 @@ export async function performForceSyncWithLock(
     const timeSeconds = result.totalTime / 1000;
     showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
 
+    // 记录强制同步
+    await addSyncRecord(plugin, result, 'force');
+
     return { executed: true, result };
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     await logError(`[IncrementalSync] Force sync failed: ${errorMsg}`);
     showSyncErrorStatus(statusBarEl, errorMsg);
+
+    // 记录强制同步失败
+    await addSyncRecord(plugin, null, 'force', undefined, errorMsg);
+
     return { executed: false, error: errorMsg };
 
   } finally {

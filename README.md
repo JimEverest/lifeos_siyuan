@@ -16,6 +16,8 @@
 - **📦 Batch Operations**: Efficient parallel processing of multiple files
 - **🔒 Multi-Device Sync Lock**: Distributed lock mechanism prevents concurrent sync conflicts (v0.4.3)
 - **📱 Device Identity**: Each device has unique ID stored in localStorage (not synced by SiYuan)
+- **📊 Sync Dashboard**: View sync statistics, cache hit rate, and device activity (v0.4.4)
+- **📜 Sync History**: Track every sync operation with detailed logs (v0.4.4)
 - **🔒 Multi-Environment Support**: Works seamlessly in HTTPS, HTTP, localhost, and Docker environments
 
 ### 🎯 Cache Mechanism Highlights
@@ -146,6 +148,31 @@ The cache system is the **core technology** enabling high-performance auto-sync 
 
 ### 🚀 Version History
 
+- **v0.4.5** (2026-01-24):
+  - 🔧 **Rebuild Cache from GitHub** - Restore cache without full re-upload
+    - Uses Git Tree API to fetch remote file list (one API call)
+    - Compares local files with GitHub using Git Blob SHA
+    - Only files that differ will be uploaded on next sync
+    - Perfect for new devices or after clearing cache
+  - ⚠️ **Two-step confirmation for Clear Cache**
+    - Warning dialog explaining risks (propagates to all devices via SiYuan sync)
+    - Type "DELETE" to confirm dangerous operation
+    - Suggests using "Rebuild Cache" instead
+- **v0.4.4** (2026-01-24):
+  - 📊 **Sync Dashboard** - View sync statistics and device activity
+    - Total docs/assets uploaded
+    - Cache hit rate
+    - Device sync activity
+    - Recent sync history
+  - 📜 **Sync History** - Track every sync operation
+    - Last 100 sync records
+    - Success/failure status
+    - Trigger type (auto/manual/force)
+    - Duration and error details
+  - 🏷️ **Tab Session Identification** - Differentiate browser tabs for Docker access
+    - Each tab gets a unique ID (sessionStorage)
+    - Tab numbers displayed as `Browser-192.168.1.1 #3`
+    - Helps identify which tab triggered a sync
 - **v0.4.3** (2026-01-24):
   - 🔒 **Multi-device sync lock mechanism** - Prevents concurrent sync conflicts
     - Distributed lock via GitHub `.sync-in-progress` file with TTL
