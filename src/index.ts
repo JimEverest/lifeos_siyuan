@@ -29,7 +29,7 @@ export default class LifeosSyncPlugin extends Plugin {
     this.statusBarEl = createStatusBar(this);
 
     this.addTopBar({
-      icon: "iconSync",
+      icon: "iconCloud",  // 使用思源内置图标（iconSync 不存在）
       title: "LifeOS Sync",
       callback: (event) => this.openMenu(event),
     });

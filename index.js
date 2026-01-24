@@ -1858,11 +1858,22 @@ function showSyncErrorStatus(el, error) {
   const shortError = error.length > 50 ? error.substring(0, 47) + "..." : error;
   updateStatusBar(el, `\u274C Sync failed: ${shortError}`);
 }
+var statusClearTimer = null;
 function showSyncSkippedStatus(el, reason) {
   updateStatusBar(el, `\u23F8\uFE0F Sync skipped: ${reason}`);
+  if (statusClearTimer) {
+    clearTimeout(statusClearTimer);
+  }
+  statusClearTimer = setTimeout(() => {
+    clearStatusBar(el);
+    statusClearTimer = null;
+  }, 15e3);
 }
 function showForceSyncStatus(el) {
   updateStatusBar(el, `\u26A0\uFE0F Force sync in progress...`);
+}
+function clearStatusBar(el) {
+  updateStatusBar(el, "");
 }
 async function showForceConfirmDialog() {
   return new Promise((resolve) => {
@@ -3581,7 +3592,8 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     await initDeviceManager();
     this.statusBarEl = createStatusBar(this);
     this.addTopBar({
-      icon: "iconSync",
+      icon: "iconCloud",
+      // 使用思源内置图标（iconSync 不存在）
       title: "LifeOS Sync",
       callback: (event) => this.openMenu(event)
     });

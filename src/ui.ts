@@ -101,11 +101,25 @@ export function showSyncErrorStatus(el: HTMLElement | null, error: string): void
   updateStatusBar(el, `❌ Sync failed: ${shortError}`);
 }
 
+// 用于清除状态栏的定时器
+let statusClearTimer: ReturnType<typeof setTimeout> | null = null;
+
 /**
- * 显示同步被用户取消
+ * 显示同步被跳过的原因，15秒后自动清除
  */
 export function showSyncSkippedStatus(el: HTMLElement | null, reason: string): void {
   updateStatusBar(el, `⏸️ Sync skipped: ${reason}`);
+
+  // 清除之前的定时器
+  if (statusClearTimer) {
+    clearTimeout(statusClearTimer);
+  }
+
+  // 15秒后自动清除状态栏
+  statusClearTimer = setTimeout(() => {
+    clearStatusBar(el);
+    statusClearTimer = null;
+  }, 15000);
 }
 
 /**
