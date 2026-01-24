@@ -2,16 +2,18 @@
 
 ## 版本说明
 
-**当前版本**: v0.4.2 (2026-01-23)
+**当前版本**: v0.4.3 (2026-01-24)
 
 本文档详细描述了 LifeOS Sync 插件的完整技术架构，包括：
+- **v0.4.3**: 分布式同步锁机制 + 设备标识管理
 - **v0.4.x**: 跨设备缓存兼容性 + Bug修复 + 浏览器环境适配
 - **v0.3.0**: 增量同步引擎 + 自动同步调度器 + 性能优化
 - **v0.2.0**: 缓存系统 + 哈希算法
 - **v0.1.0**: 基础导出功能
 
 ## 目录
-1. [v0.4.x 新增功能与修复](#v04x-新增功能与修复)
+1. [v0.4.3 分布式同步锁机制](#v043-分布式同步锁机制)
+2. [v0.4.x 新增功能与修复](#v04x-新增功能与修复)
 2. [v0.3.0 新增架构](#v030-新增架构)
    - [增量同步引擎](#增量同步引擎)
    - [自动同步调度器](#自动同步调度器)
@@ -25,6 +27,288 @@
 9. [数据结构详解](#数据结构详解)
 10. [边界情况处理](#边界情况处理)
 11. [已知技术问题与解决方案](#已知技术问题与解决方案)
+
+---
+
+## v0.4.3 分布式同步锁机制
+
+### 问题背景
+
+**场景**：用户在多个设备上使用思源笔记：
+- Desktop 端（Windows）
+- Docker 端（24/7 运行）
+- Mobile 端（手机、iPad）
+- Browser tabs（多个浏览器标签页）
+
+所有设备都启用自动同步（10-30 分钟间隔），导致：
+1. **并发写入冲突**：多个设备同时向 GitHub 写入同一文件
+2. **SHA 校验失败**：GitHub 返回 409 Conflict
+3. **缓存不一致**：不同设备的本地缓存可能不同步
+
+### 解决方案架构
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│              分布式同步锁流程 (v0.4.3)                              │
+└──────────────────────────────────────────────────────────────────┘
+
+    设备 A                    GitHub                    设备 B
+    ┌────────┐              ┌────────┐                ┌────────┐
+    │ 触发   │              │        │                │ 触发   │
+    │ 同步   │              │        │                │ 同步   │
+    └───┬────┘              │        │                └───┬────┘
+        │                   │        │                    │
+        ▼                   │        │                    ▼
+    ┌─────────────┐        │        │            ┌─────────────┐
+    │ 1. 检查锁   │◄───────┤ .sync- │───────────►│ 1. 检查锁   │
+    │    文件     │        │ in-    │            │    文件     │
+    └─────┬───────┘        │ progress│           └─────┬───────┘
+          │                │        │                   │
+          ▼                │        │                   ▼
+    ┌─────────────┐        │        │            ┌─────────────┐
+    │ 2. 检查     │◄───────┤ commits│───────────►│ 2. 检查     │
+    │ commit时间  │        │        │            │ commit时间  │
+    └─────┬───────┘        │        │            └─────┬───────┘
+          │                │        │                   │
+          │ 无冲突         │        │         有冲突    │
+          ▼                │        │                   ▼
+    ┌─────────────┐        │        │            ┌─────────────┐
+    │ 3. 等待     │        │        │            │ 跳过同步    │
+    │ Jitter(0-15s)│       │        │            │ (显示原因)  │
+    └─────┬───────┘        │        │            └─────────────┘
+          │                │        │
+          ▼                │        │
+    ┌─────────────┐        │        │
+    │ 4. 二次检查 │◄───────┤        │
+    └─────┬───────┘        │        │
+          │                │        │
+          │ 无冲突         │        │
+          ▼                │        │
+    ┌─────────────┐        │        │
+    │ 5. 创建锁   │────────►│        │
+    └─────┬───────┘        │        │
+          │                │        │
+          ▼                │        │
+    ┌─────────────┐        │        │
+    │ 6. 执行同步 │────────►│ docs/  │
+    └─────┬───────┘        │ assets/│
+          │                │        │
+          ▼                │        │
+    ┌─────────────┐        │        │
+    │ 7. 释放锁   │────────►│ 删除   │
+    └─────────────┘        │ .sync- │
+                           │ in-    │
+                           │ progress│
+                           └────────┘
+```
+
+### 核心组件
+
+#### 1. 设备标识管理 (`device-manager.ts`)
+
+**关键设计决策**：使用 `localStorage` 而非 `plugin.saveData()`
+
+```typescript
+// ❌ 错误方式：plugin.saveData() 会被 SiYuan 同步到其他设备
+await plugin.saveData('device-id.json', { deviceId: 'xxx' });
+// 结果：所有设备共享同一个 deviceId，失去唯一标识意义
+
+// ✅ 正确方式：localStorage 是浏览器本地存储，不会被同步
+localStorage.setItem('lifeos-sync-device-id', deviceId);
+// 结果：每个设备有独立的 deviceId
+```
+
+**主要函数**：
+- `getDeviceId()`: 获取或生成设备 UUID
+- `getDeviceName()`: 获取设备名称（可自定义）
+- `setDeviceName()`: 设置设备名称
+- `regenerateDeviceId()`: 重新生成设备 ID
+- `getShortDeviceId()`: 获取短 ID（用于显示）
+
+#### 2. 锁文件格式 (`.sync-in-progress`)
+
+```json
+{
+  "deviceId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "deviceName": "Desktop-Windows",
+  "startTime": 1706000000000,
+  "startTimeReadable": "2026-01-24 15:30:45 (UTC+8)",
+  "ttl": 600000,
+  "expiresAt": 1706000600000,
+  "expiresAtReadable": "2026-01-24 15:40:45 (UTC+8)"
+}
+```
+
+**字段说明**：
+- `deviceId`: 设备唯一标识（UUID）
+- `deviceName`: 设备名称（用户可读）
+- `startTime`: 锁创建时间戳
+- `startTimeReadable`: 人类可读的开始时间（UTC+8）
+- `ttl`: 锁超时时间（毫秒）
+- `expiresAt`: 锁过期时间戳
+- `expiresAtReadable`: 人类可读的过期时间
+
+#### 3. 同步锁模块 (`sync-lock.ts`)
+
+**主要函数**：
+
+```typescript
+// 获取锁状态
+async function getSyncLock(settings: Settings): Promise<SyncLockInfo | null>
+
+// 创建锁
+async function createSyncLock(settings: Settings, lockSettings: SyncLockSettings): Promise<boolean>
+
+// 释放锁
+async function releaseSyncLock(settings: Settings): Promise<boolean>
+
+// 完整锁获取流程
+async function acquireSyncLock(
+  settings: Settings,
+  lockSettings: SyncLockSettings,
+  onStatus?: (message: string) => void,
+  onCountdown?: (remaining: number) => void
+): Promise<SyncLockCheckResult>
+
+// 获取最近 commit 时间
+async function getLastCommitTime(settings: Settings): Promise<number>
+```
+
+### 配置选项
+
+| 配置项 | 说明 | 默认值 |
+|-------|------|--------|
+| `syncLock.enabled` | 启用分布式锁 | `true` |
+| `syncLock.lockTtl` | 锁超时时间 | `600000` (10分钟) |
+| `syncLock.firstCheckThreshold` | 第一次检查阈值 | `600000` (10分钟) |
+| `syncLock.secondCheckThreshold` | 二次检查阈值 | `300000` (5分钟) |
+| `syncLock.jitterRange` | 随机等待范围 | `15000` (15秒) |
+
+### 同步决策逻辑
+
+```typescript
+async function acquireSyncLock(...): Promise<SyncLockCheckResult> {
+  // 1. 第一次检查：锁文件 + commit 时间
+  const existingLock = await getSyncLock(settings);
+
+  if (existingLock && existingLock.deviceId !== myDeviceId) {
+    if (Date.now() < existingLock.expiresAt) {
+      // 其他设备正在同步，未过期
+      return { canSync: false, reason: `${existingLock.deviceName} is syncing` };
+    }
+    // 锁已过期，可以覆盖
+  }
+
+  const lastCommitTime = await getLastCommitTime(settings);
+  if (Date.now() - lastCommitTime < firstCheckThreshold) {
+    // 最近有人同步过
+    return { canSync: false, reason: `Last sync ${minutes}m ago` };
+  }
+
+  // 2. 随机等待 (Jitter)
+  const jitter = calculateJitter(deviceId, jitterRange);
+  await waitWithCountdown(jitter, onCountdown);
+
+  // 3. 二次检查 (更短的阈值)
+  const lastCommitTime2 = await getLastCommitTime(settings);
+  if (Date.now() - lastCommitTime2 < secondCheckThreshold) {
+    // 有人在 jitter 期间同步了
+    return { canSync: false, reason: `Someone synced during jitter` };
+  }
+
+  // 4. 创建锁文件
+  await createSyncLock(settings, lockSettings);
+
+  return { canSync: true };
+}
+```
+
+### Jitter 算法
+
+**目的**：避免多个设备同时通过检查后同时尝试创建锁
+
+```typescript
+function calculateJitter(deviceId: string, jitterRange: number): number {
+  // 基于 deviceId 的稳定哈希
+  let hash = 0;
+  for (let i = 0; i < deviceId.length; i++) {
+    const char = deviceId.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+
+  // 映射到 jitterRange (0-15秒)
+  return Math.abs(hash) % jitterRange;
+}
+```
+
+**特点**：
+- 同一设备每次的 jitter 相对稳定
+- 不同设备之间有差异
+- 避免完全随机导致的不确定性
+
+### 状态栏反馈
+
+| 状态 | 显示内容 | 说明 |
+|------|---------|------|
+| 检查锁 | `🔍 Checking sync lock...` | 正在检查锁状态 |
+| 被阻止 | `⏸️ Desktop-Win is syncing (8m 30s)` | 其他设备正在同步 |
+| 最近同步 | `⏸️ Last sync 5m ago (threshold: 10m)` | 最近有人同步过 |
+| 等待 | `⏳ Waiting to sync... (12s)` | Jitter 倒计时 |
+| 获取锁 | `🔒 Acquiring sync lock...` | 正在创建锁文件 |
+| 同步中 | `🔄 Syncing docs... 📄 (5/20)` | 同步进行中 |
+| 完成 | `✅ Sync complete: 18 docs, 5 assets (4.2s)` | 同步成功 |
+| 失败 | `❌ Sync failed: Network error` | 同步失败 |
+| 强制同步 | `⚠️ Force sync in progress...` | 强制同步中 |
+
+### 强制同步功能
+
+**使用场景**：
+- 锁文件因设备崩溃遗留
+- 需要紧急同步
+- 调试/测试
+
+**安全机制**：
+- 需要输入 "yes" 确认
+- 会覆盖现有锁
+- 日志记录强制同步操作
+
+```typescript
+async function performForceSyncWithLock(...): Promise<LockedSyncResult> {
+  // 显示确认对话框
+  const confirmed = await showForceConfirmDialog();
+  if (!confirmed) return { executed: false, skippedReason: 'Cancelled' };
+
+  // 强制创建锁（覆盖现有）
+  await createSyncLock(settings, lockSettings);
+
+  // 执行同步
+  const result = await performIncrementalSync(...);
+
+  // 释放锁
+  await releaseSyncLock(settings);
+
+  return { executed: true, result };
+}
+```
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/device-manager.ts` | 设备标识管理（localStorage） |
+| `src/sync-lock.ts` | 分布式锁机制 |
+
+### 修改文件
+
+| 文件 | 修改内容 |
+|------|---------|
+| `src/types.ts` | 添加 `SyncLockConfig` 接口 |
+| `src/settings.ts` | 添加默认锁配置，修复深度合并 |
+| `src/ui.ts` | 添加锁状态显示函数，确认对话框 |
+| `src/incremental-sync.ts` | 添加 `performIncrementalSyncWithLock()` |
+| `src/auto-sync-scheduler.ts` | 使用带锁的同步函数 |
+| `src/index.ts` | 设置界面添加设备/锁配置 |
 
 ---
 
@@ -1942,7 +2226,7 @@ GitHub API 有速率限制：
 - 最小同步间隔：5 分钟（安全）
 - 监控 API 配额：GitHub 响应头 `X-RateLimit-Remaining`
 
-### 7. 多端并发写入冲突（待解决）
+### 7. 多端并发写入冲突（✅ 已解决）
 
 **问题描述**：
 多个客户端同时向 GitHub 写入可能导致：
@@ -1950,20 +2234,18 @@ GitHub API 有速率限制：
 - 缓存不一致
 - SHA 校验失败
 
-**当前状态**：
-- ⚠️ 已识别问题
-- ⚠️ 暂未实现分布式锁机制
-- ⚠️ 建议用户手动配置同步策略（见 HANDOVER.md）
+**解决方案（v0.4.3）**：
+分布式同步锁机制：
+1. GitHub 锁文件 `.sync-in-progress` + TTL
+2. 最近 commit 时间检查
+3. 随机 Jitter 等待
+4. 双重检查模式
+5. 强制同步选项
 
-**计划解决方案**：
-1. 方案 1：用户配置设备角色（Aggressive/Conservative/Manual）
-2. 方案 2：GitHub 标记文件锁（`.sync-in-progress`）
-3. 方案 3：时间戳检查 + 随机抖动
-
-详见 HANDOVER.md 的"待实现功能"章节。
+详见本文档 "v0.4.3 分布式同步锁机制" 章节。
 
 ---
 
-**文档版本:** v3.0.0
-**最后更新:** 2026-01-23
+**文档版本:** v4.0.0
+**最后更新:** 2026-01-24
 **作者:** Claude Code

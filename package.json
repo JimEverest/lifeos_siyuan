@@ -1,6 +1,6 @@
 {
   "name": "lifeos_sync",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "scripts": {
     "build": "esbuild src/index.ts --bundle --format=cjs --platform=browser --external:siyuan --outfile=index.js --log-level=info",

@@ -1,7 +1,7 @@
 # LifeOS Sync - 项目交接文档
 
-**交接日期**: 2026-01-23
-**当前版本**: v0.4.2
+**交接日期**: 2026-01-24
+**当前版本**: v0.4.3
 **交接人**: Claude Code
 **接收人**: [待填写]
 
@@ -46,7 +46,37 @@ LifeOS Sync 是为思源笔记（SiYuan）开发的**单向同步插件**，将�
 
 ### 版本历史
 
-#### v0.4.2 (2026-01-23) - **当前版本**
+#### v0.4.3 (2026-01-24) - **当前版本**
+**重大更新**：
+- 🔒 分布式同步锁机制（防止多设备并发冲突）
+  - GitHub `.sync-in-progress` 锁文件 + TTL
+  - 最近 commit 时间检查
+  - 随机 Jitter 等待（0-15秒）
+  - 双重检查模式
+- 📱 设备标识管理
+  - localStorage 存储（不会被 SiYuan 同步）
+  - 自动生成 UUID
+  - 可自定义设备名称
+- ⚠️ 强制同步功能（输入 "yes" 确认）
+- ⚙️ 可配置的锁参数（TTL、阈值、Jitter）
+
+**新增文件**：
+- `src/device-manager.ts` - 设备标识管理
+- `src/sync-lock.ts` - 分布式锁机制
+
+**修改文件**：
+- `src/types.ts` - 添加 SyncLockConfig 接口
+- `src/settings.ts` - 添加默认锁配置
+- `src/ui.ts` - 添加锁状态显示
+- `src/incremental-sync.ts` - 添加带锁同步函数
+- `src/auto-sync-scheduler.ts` - 使用带锁同步
+- `src/index.ts` - 设置界面添加设备/锁配置
+
+**影响**：
+- ✅ 多设备并发同步冲突问题解决
+- ✅ 状态栏显示详细的同步状态和原因
+
+#### v0.4.2 (2026-01-23)
 **修复**：
 - 🐛 浏览器环境 `Buffer is not defined` 错误
 - 🐛 图片链接双叹号问题 (`!![image]` → `![image]`)
@@ -86,10 +116,10 @@ LifeOS Sync 是为思源笔记（SiYuan）开发的**单向同步插件**，将�
 - **同步频率**: 10-30 分钟自动同步
 
 ### 项目成熟度
-- **功能完整度**: 80%（核心功能完成，分布式锁待实现）
+- **功能完整度**: 90%（核心功能完成，分布式锁已实现）
 - **稳定性**: 85%（已修复主要 Bug，需要更多边界测试）
 - **性能**: 95%（增量同步性能优异）
-- **文档完整度**: 90%（技术文档完善，用户文档待补充）
+- **文档完整度**: 95%（技术文档完善）
 
 ---
 
@@ -111,12 +141,15 @@ lifeos_sync/
 │   ├── index.ts                  # 插件主入口，生命周期管理
 │   ├── settings.ts               # 配置管理
 │   ├── logger.ts                 # 日志系统（带缓冲的异步写入）
-│   ├── ui.ts                     # 状态栏 UI
+│   ├── ui.ts                     # 状态栏 UI + 确认对话框
 │   │
 │   ├── cache-manager.ts          # ⭐ 缓存系统核心
 │   ├── hash-utils.ts             # 哈希算法（SHA-256/FNV-1a）
 │   ├── incremental-sync.ts       # ⭐ 增量同步引擎
 │   ├── auto-sync-scheduler.ts    # ⭐ 自动同步调度器
+│   │
+│   ├── device-manager.ts         # ⭐ 设备标识管理（v0.4.3）
+│   ├── sync-lock.ts              # ⭐ 分布式锁机制（v0.4.3）
 │   │
 │   ├── exporter.ts               # 文档导出逻辑
 │   ├── assets-sync.ts            # 资源同步逻辑
@@ -208,6 +241,19 @@ data/storage/petal/lifeos_sync/
    - 时间戳变化检测
    - GitHub SHA 缓存（减少 50% API 调用）
 
+6. **分布式同步锁** (v0.4.3)
+   - GitHub 锁文件 `.sync-in-progress` + TTL
+   - 最近 commit 时间检查
+   - 随机 Jitter 等待
+   - 双重检查模式
+   - 强制同步选项
+
+7. **设备标识管理** (v0.4.3)
+   - localStorage 存储（不被 SiYuan 同步）
+   - 自动生成 UUID
+   - 可自定义设备名称
+   - Regenerate 功能
+
 ### ✅ 配置选项
 
 | 配置项 | 说明 | 默认值 |
@@ -226,6 +272,11 @@ data/storage/petal/lifeos_sync/
 | `autoSync.interval` | 同步间隔（分钟） | `30` |
 | `autoSync.syncDocs` | 同步文档 | `true` |
 | `autoSync.syncAssets` | 同步资源 | `true` |
+| `syncLock.enabled` | 启用分布式锁 | `true` |
+| `syncLock.lockTtl` | 锁超时时间（毫秒） | `600000` (10分钟) |
+| `syncLock.firstCheckThreshold` | 第一次检查阈值（毫秒） | `600000` (10分钟) |
+| `syncLock.secondCheckThreshold` | 二次检查阈值（毫秒） | `300000` (5分钟) |
+| `syncLock.jitterRange` | 随机等待范围（毫秒） | `15000` (15秒) |
 
 ---
 
@@ -257,209 +308,53 @@ data/storage/petal/lifeos_sync/
    - GitHub API 单文件限制：100MB
    - 插件会自动跳过超大文件
 
-4. **并发写入冲突**（⚠️ **重点问题**）
+4. **并发写入冲突**（✅ **已解决**）
    - 多设备同时同步可能导致 GitHub SHA 冲突
-   - **状态**: 🔴 **待解决**（见下一节"待实现功能"）
+   - **状态**: ✅ **已在 v0.4.3 解决**（分布式锁机制）
 
 ---
 
 ## 待实现功能（优先级排序）
 
-### 🔴 Priority 1: 分布式同步锁机制
+> **注意**: 分布式同步锁机制已在 v0.4.3 实现，以下是后续建议改进。
 
-#### 问题描述
+### 🟡 Priority 1: 同步历史与监控
 
-**场景**：
-用户在多个设备上使用思源笔记：
-- Desktop 端（Windows）
-- Docker 端（24/7 运行）
-- Mobile 端（手机、iPad）
-- Browser tabs（多个浏览器标签页）
+#### 1. 同步历史记录
+- 记录每次同步的详细信息（时间、设备、上传/跳过文件数）
+- 本地存储最近 100 次同步记录
+- 提供查看界面（菜单 → 查看同步历史）
+- 支持导出同步日志
 
-所有设备都启用自动同步（10-30 分钟间隔），导致：
-1. **并发写入冲突**：多个设备同时向 GitHub 写入同一文件
-2. **SHA 校验失败**：GitHub 返回 409 Conflict
-3. **缓存不一致**：不同设备的本地缓存可能不同步
+#### 2. 同步仪表盘
+- 显示同步统计（总文档数、总资源数、缓存命中率）
+- 显示各设备最后同步时间
+- 显示 GitHub API 配额使用情况
+- 可视化同步状态图表
 
-**典型冲突场景**：
-```
-时间线：
-T0: Desktop 和 Docker 同时触发自动同步
-T1: Desktop 读取 file.md（SHA: abc123）
-T2: Docker 读取 file.md（SHA: abc123）
-T3: Desktop 上传 file.md（新 SHA: def456）✅ 成功
-T4: Docker 尝试上传 file.md（使用 SHA: abc123）
-    → GitHub 返回 409 Conflict ❌
-    → Docker 端同步失败，需要重试
+#### 3. 冲突检测与告警
+- 检测同一文件在短时间内被多个设备修改
+- 显示潜在冲突告警
+- 提供手动解决冲突的选项
 
-结果：
-- Docker 端日志记录错误
-- 用户体验不佳（频繁失败通知）
-- 可能导致缓存不一致
-```
+### 🟡 Priority 2: 功能增强
 
-#### 解决方案对比
+#### 1. 选择性同步
+- 支持按笔记本选择是否同步
+- 支持按标签选择是否同步
+- 支持同步白名单/黑名单
 
-我们讨论过 3 种方案，以下是详细对比：
+#### 2. Webhook 通知
+- 同步完成后发送 Webhook 通知
+- 支持配置多个 Webhook 端点
+- 支持自定义通知内容
 
-##### 方案 1: 用户配置设备角色（推荐）
+#### 3. 同步报告
+- 每日/每周同步摘要报告
+- 邮件或 Webhook 发送
+- 统计同步趋势
 
-**实现逻辑**：
-在插件设置中添加 "Auto Sync Mode" 选项：
-- **Aggressive**: 总是尝试自动同步（默认）
-- **Conservative**: 只在没人同步时才同步（时间戳检查阈值改为 30 分钟）
-- **Manual Only**: 关闭自动同步（手动触发）
-
-**用户配置示例**：
-- Docker 端（24/7 在线）: Aggressive
-- Desktop 端（偶尔在线）: Conservative
-- Mobile 端（移动使用）: Manual Only
-
-**优点**：
-- ✅ 实现超级简单（1-2 小时）
-- ✅ 完全避免冲突（用户自己控制）
-- ✅ 符合实际使用场景（通常有一个"主力设备"）
-- ✅ 无需外部服务
-
-**缺点**：
-- ❌ 需要用户手动配置
-- ❌ 主设备离线时其他设备不会自动接管
-
-**推荐理由**：
-- 用户并发度低（3-5 个设备）
-- 通常有一个主力设备（Desktop 或 Docker）
-- 实现简单，维护成本低
-
-**实现步骤**：
-```typescript
-// 1. 添加配置选项
-interface Settings {
-  autoSync: {
-    enabled: boolean;
-    interval: number;
-    mode: 'aggressive' | 'conservative' | 'manual';  // 新增
-    // ...
-  }
-}
-
-// 2. 修改增量同步逻辑
-async function performIncrementalSync(plugin: Plugin, settings: Settings) {
-  // Conservative 模式：检查 GitHub 最近提交时间
-  if (settings.autoSync.mode === 'conservative') {
-    const lastCommitTime = await getLastCommitTime(settings);
-    const timeSinceLastCommit = Date.now() - lastCommitTime;
-
-    if (timeSinceLastCommit < 30 * 60 * 1000) {  // 30 分钟内有人同步过
-      await logInfo('[AutoSync] Conservative mode: Recent sync detected, skipping');
-      return;  // 放弃本次同步
-    }
-  }
-
-  // 继续正常同步逻辑...
-}
-
-// 3. 获取 GitHub 最近提交时间
-async function getLastCommitTime(settings: Settings): Promise<number> {
-  const url = `https://api.github.com/repos/${owner}/${repo}/commits/${branch}`;
-  const response = await fetch(url, {
-    headers: { Authorization: `token ${settings.token}` }
-  });
-  const data = await response.json();
-  return new Date(data.commit.author.date).getTime();
-}
-```
-
-##### 方案 2: GitHub 标记文件锁
-
-**实现逻辑**：
-在 GitHub 仓库中创建锁文件 `.sync-in-progress`：
-```json
-{
-  "deviceId": "desktop-uuid",
-  "lockTime": 1706000000000,
-  "ttl": 600000  // 10 分钟超时
-}
-```
-
-**工作流程**：
-1. 同步前检查 `.sync-in-progress` 是否存在
-2. 存在且未过期 → 放弃同步
-3. 不存在或已过期 → 创建锁文件 → 开始同步
-4. 同步完成 → 删除锁文件
-
-**优点**：
-- ✅ 零外部依赖
-- ✅ 真正的互斥锁
-- ✅ 自动处理死锁（超时机制）
-
-**缺点**：
-- ❌ 实现复杂（需要心跳维护）
-- ❌ 频繁 GitHub API 调用（每 30 秒更新心跳）
-- ❌ 网络抖动可能导致误判
-
-**不推荐理由**：
-- 复杂度收益比不划算
-- GitHub API 配额浪费
-- 用户场景不需要这么强的保证
-
-##### 方案 3: 时间戳检查 + 随机抖动
-
-**实现逻辑**：
-```typescript
-async function runSyncWithJitter(settings: Settings) {
-  // 1. 检查最近 commit 时间
-  const lastCommitTime = await getLastCommitTime(settings);
-  if (Date.now() - lastCommitTime < 10 * 60 * 1000) {
-    return;  // 10 分钟内有人同步过，放弃
-  }
-
-  // 2. 随机等待 0-60 秒（基于 deviceId 的稳定哈希）
-  const deviceId = await getDeviceId();
-  const jitter = hash(deviceId) % 60000;  // 0-60秒
-  await sleep(jitter);
-
-  // 3. 二次检查（阈值缩短为 5 分钟）
-  const lastCommitTime2 = await getLastCommitTime(settings);
-  if (Date.now() - lastCommitTime2 < 5 * 60 * 1000) {
-    return;  // 有人在我 sleep 期间同步了，放弃
-  }
-
-  // 4. 执行同步
-  await performIncrementalSync(...);
-}
-```
-
-**优点**：
-- ✅ 零外部依赖
-- ✅ 实现简单（2-3 小时）
-- ✅ 99% 场景有效
-
-**缺点**：
-- ❌ 不是强一致性（极端情况仍可能冲突）
-- ❌ 依赖概率性避免冲突
-
-**不推荐理由**：
-- 方案 1 更简单且用户体验更好
-- 极端情况下仍可能冲突（虽然概率极低）
-
-#### 推荐实施计划
-
-**阶段 1（立即实施）**: 方案 1 - 用户配置设备角色
-- **工作量**: 1-2 小时
-- **优先级**: 🔴 High
-- **预期效果**: 立即解决 90% 的并发问题
-
-**阶段 2（可选优化）**: 方案 3 - 时间戳检查 + 抖动
-- **工作量**: 2-3 小时
-- **优先级**: 🟡 Medium
-- **预期效果**: 提升到 99.9% 避免冲突
-
-**不建议**: 方案 2 - GitHub 标记文件锁
-- **理由**: 复杂度高，收益低，维护成本高
-
----
-
-### 🟡 Priority 2: 其他改进
+### 🟢 Priority 3: 技术改进
 
 #### 1. 改进日志系统
 - 添加日志等级（DEBUG/INFO/WARN/ERROR）
@@ -663,8 +558,15 @@ npm run build:watch
 **症状**: Docker 端日志显示 "409 Conflict"
 
 **解决方案**:
-- **待实现**（见"待实现功能 - Priority 1"）
-- 临时方案：手动配置不同设备的同步间隔错开
+- **已在 v0.4.3 解决**：分布式同步锁机制
+  - GitHub `.sync-in-progress` 锁文件 + TTL
+  - 最近 commit 时间检查
+  - 随机 Jitter 等待
+  - 双重检查模式
+- 如仍遇到问题：
+  - 检查 syncLock.enabled 是否为 true
+  - 使用"Force Sync"强制同步
+  - 查看状态栏显示的跳过原因
 
 ---
 

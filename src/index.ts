@@ -2,12 +2,14 @@ import { Plugin, Menu } from "siyuan";
 
 import { loadSettings, saveSettings } from "./settings";
 import { exportCurrentDocToGit } from "./exporter";
-import { createStatusBar, updateStatusBar } from "./ui";
+import { createStatusBar, updateStatusBar, showForceConfirmDialog } from "./ui";
 import { initLogger, logError, logInfo } from "./logger";
 import type { Settings } from "./types";
 import { getActiveDocRefFromDOM } from "./siyuan-api";
 import { syncAllAssets } from "./assets-sync";
 import { AutoSyncScheduler } from "./auto-sync-scheduler";
+import { initDeviceManager, getDeviceId, getDeviceName, setDeviceName, regenerateDeviceId, getShortDeviceId } from "./device-manager";
+import { performForceSyncWithLock } from "./incremental-sync";
 
 export default class LifeosSyncPlugin extends Plugin {
   private settings: Settings | null = null;
@@ -17,7 +19,11 @@ export default class LifeosSyncPlugin extends Plugin {
   async onload(): Promise<void> {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.4.2");
+    await logInfo("plugin loaded v0.4.3");
+
+    // 初始化设备管理器
+    await initDeviceManager();
+
     this.statusBarEl = createStatusBar(this);
 
     this.addTopBar({
@@ -31,7 +37,8 @@ export default class LifeosSyncPlugin extends Plugin {
       this.autoSyncScheduler = new AutoSyncScheduler(
         this,
         this.settings,
-        (message) => updateStatusBar(this.statusBarEl, message)
+        (message) => updateStatusBar(this.statusBarEl, message),
+        this.statusBarEl
       );
       await this.autoSyncScheduler.start();
       await logInfo("Auto sync scheduler started");
@@ -88,6 +95,13 @@ export default class LifeosSyncPlugin extends Plugin {
         void this.clearCacheAndFullSync();
       },
     });
+    menu.addItem({
+      label: "⚠️ Force Sync (Override Lock)",
+      icon: "iconWarning",
+      click: () => {
+        void this.forceSync();
+      },
+    });
     // 添加强制停止按钮（仅在同步运行时显示）
     if (this.autoSyncScheduler?.getIsRunning()) {
       menu.addItem({
@@ -140,8 +154,23 @@ export default class LifeosSyncPlugin extends Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.4.2</span>
+        <span style="opacity:0.6; font-size:12px;">v0.4.3</span>
       </div>
+
+      <h4 style="margin-top:0;margin-bottom:8px;">📱 Device Settings</h4>
+      <div style="background:var(--b3-theme-surface-lighter,#f5f5f5);padding:12px;border-radius:6px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:12px;opacity:0.7;">Device ID: <code>${getShortDeviceId()}...</code></span>
+          <button class="b3-button b3-button--outline" id="${dialogId}-regenerate" style="padding:2px 8px;font-size:11px;">Regenerate</button>
+        </div>
+        <label class="b3-label" style="margin-bottom:0;">
+          Device Name
+          <input class="b3-text-field fn__block" id="${dialogId}-devicename" value="${getDeviceName()}" placeholder="e.g. Desktop-Windows">
+        </label>
+        <div style="font-size:11px;opacity:0.6;margin-top:4px;">Stored locally, not synced between devices</div>
+      </div>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">🔗 GitHub Settings</h4>
       <label class="b3-label">Repo URL
         <input class="b3-text-field fn__block" id="${dialogId}-repo" value="${s.repoUrl}">
       </label>
@@ -157,6 +186,8 @@ export default class LifeosSyncPlugin extends Plugin {
       <label class="b3-label">Assets dir
         <input class="b3-text-field fn__block" id="${dialogId}-assets" value="${s.assetsDir}">
       </label>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">🚫 Ignore Settings</h4>
       <label class="b3-label">Ignore notebooks (*, comma separated)
         <input class="b3-text-field fn__block" id="${dialogId}-ignb" value="${s.ignoreNotebooks.join(", ")}">
       </label>
@@ -187,8 +218,8 @@ export default class LifeosSyncPlugin extends Plugin {
           <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-cleanfm" ${s.cleanFrontmatter ? "checked" : ""}>
         </div>
       </label>
-      <div class="fn__space"></div>
-      <h4 style="margin-top:16px;margin-bottom:8px;">Auto Sync</h4>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">⏰ Auto Sync</h4>
       <label class="b3-label">
         <div class="fn__flex">
           <div class="fn__flex-1">
@@ -220,6 +251,35 @@ export default class LifeosSyncPlugin extends Plugin {
           <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-syncassets" ${s.autoSync.syncAssets ? "checked" : ""}>
         </div>
       </label>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">🔒 Distributed Lock (Multi-device Conflict Prevention)</h4>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Enable distributed lock
+            <div class="b3-label__text">Prevent multiple devices from syncing simultaneously</div>
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-lockenabled" ${s.syncLock.enabled ? "checked" : ""}>
+        </div>
+      </label>
+      <label class="b3-label">Lock timeout / TTL (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-lockttl" value="${Math.round(s.syncLock.lockTtl / 60000)}" min="1" max="60">
+        <div class="b3-label__text">If a device crashes, lock auto-expires after this time</div>
+      </label>
+      <label class="b3-label">First check threshold (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-firstthreshold" value="${Math.round(s.syncLock.firstCheckThreshold / 60000)}" min="1" max="60">
+        <div class="b3-label__text">Skip sync if last commit was within this time</div>
+      </label>
+      <label class="b3-label">Second check threshold (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-secondthreshold" value="${Math.round(s.syncLock.secondCheckThreshold / 60000)}" min="1" max="30">
+        <div class="b3-label__text">Shorter threshold for the double-check after jitter</div>
+      </label>
+      <label class="b3-label">Random jitter range (seconds)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-jitter" value="${Math.round(s.syncLock.jitterRange / 1000)}" min="5" max="120">
+        <div class="b3-label__text">Random wait time to avoid conflicts (countdown shown in status bar)</div>
+      </label>
+
       <div class="fn__space"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
         <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
@@ -236,6 +296,12 @@ export default class LifeosSyncPlugin extends Plugin {
 
     const doSave = async () => {
       const oldAutoSyncEnabled = this.settings.autoSync.enabled;
+
+      // 保存设备名称到 localStorage
+      const newDeviceName = q(`#${dialogId}-devicename`).value.trim();
+      if (newDeviceName) {
+        setDeviceName(newDeviceName);
+      }
 
       this.settings = {
         ...s,
@@ -265,6 +331,13 @@ export default class LifeosSyncPlugin extends Plugin {
           syncAssets: q(`#${dialogId}-syncassets`).checked,
           onlyWhenIdle: false,
           maxConcurrency: 5
+        },
+        syncLock: {
+          enabled: q(`#${dialogId}-lockenabled`).checked,
+          lockTtl: (parseInt(q(`#${dialogId}-lockttl`).value) || 10) * 60 * 1000,
+          firstCheckThreshold: (parseInt(q(`#${dialogId}-firstthreshold`).value) || 10) * 60 * 1000,
+          secondCheckThreshold: (parseInt(q(`#${dialogId}-secondthreshold`).value) || 5) * 60 * 1000,
+          jitterRange: (parseInt(q(`#${dialogId}-jitter`).value) || 15) * 1000
         }
       };
       await saveSettings(this, this.settings);
@@ -280,7 +353,8 @@ export default class LifeosSyncPlugin extends Plugin {
           this.autoSyncScheduler = new AutoSyncScheduler(
             this,
             this.settings,
-            (message) => updateStatusBar(this.statusBarEl, message)
+            (message) => updateStatusBar(this.statusBarEl, message),
+            this.statusBarEl
           );
           await this.autoSyncScheduler.start();
         }
@@ -293,6 +367,18 @@ export default class LifeosSyncPlugin extends Plugin {
       await logInfo("Settings saved");
       destroy();
     };
+
+    // Regenerate device ID button
+    q(`#${dialogId}-regenerate`)?.addEventListener("click", () => {
+      if (confirm("Are you sure you want to regenerate your device ID? This will change your device identity for sync lock purposes.")) {
+        regenerateDeviceId();
+        // Update the displayed short ID
+        const shortIdEl = card.querySelector(`#${dialogId}-regenerate`)?.parentElement?.querySelector("code");
+        if (shortIdEl) {
+          shortIdEl.textContent = `${getShortDeviceId()}...`;
+        }
+      }
+    });
 
     q(`#${dialogId}-save`)?.addEventListener("click", () => {
       void doSave();
@@ -362,6 +448,11 @@ export default class LifeosSyncPlugin extends Plugin {
   }
 
   private async clearCacheAndFullSync(): Promise<void> {
+    if (!this.settings) {
+      await logError("Settings not loaded");
+      return;
+    }
+
     try {
       updateStatusBar(this.statusBarEl, "Clearing cache...");
       await logInfo("[ClearCache] Starting to clear all cache");
@@ -383,14 +474,16 @@ export default class LifeosSyncPlugin extends Plugin {
       this.autoSyncScheduler = new AutoSyncScheduler(
         this,
         this.settings,
-        (message) => updateStatusBar(this.statusBarEl, message)
+        (message) => updateStatusBar(this.statusBarEl, message),
+        this.statusBarEl
       );
       await this.autoSyncScheduler.start();
       await logInfo("[ClearCache] Full sync triggered");
 
     } catch (error) {
-      await logError(`[ClearCache] Failed: ${error}`);
-      updateStatusBar(this.statusBarEl, `Clear cache failed: ${error.message}`);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await logError(`[ClearCache] Failed: ${errorMsg}`);
+      updateStatusBar(this.statusBarEl, `Clear cache failed: ${errorMsg}`);
     }
   }
 
@@ -407,7 +500,8 @@ export default class LifeosSyncPlugin extends Plugin {
       this.autoSyncScheduler = new AutoSyncScheduler(
         this,
         this.settings,
-        (message) => updateStatusBar(this.statusBarEl, message)
+        (message) => updateStatusBar(this.statusBarEl, message),
+        this.statusBarEl
       );
       await this.autoSyncScheduler.start();
       await logInfo("Auto sync enabled");
@@ -420,6 +514,43 @@ export default class LifeosSyncPlugin extends Plugin {
       }
       await logInfo("Auto sync disabled");
       updateStatusBar(this.statusBarEl, "Auto sync: OFF");
+    }
+  }
+
+  private async forceSync(): Promise<void> {
+    if (!this.settings) {
+      await logError("Settings not loaded");
+      return;
+    }
+
+    // 显示确认对话框
+    const confirmed = await showForceConfirmDialog();
+    if (!confirmed) {
+      await logInfo("Force sync cancelled by user");
+      updateStatusBar(this.statusBarEl, "Force sync cancelled");
+      return;
+    }
+
+    await logInfo("Force sync confirmed by user, starting...");
+    updateStatusBar(this.statusBarEl, "Force sync starting...");
+
+    try {
+      const result = await performForceSyncWithLock(
+        this,
+        this.settings,
+        this.statusBarEl,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+
+      if (result.executed && result.result) {
+        await logInfo(`Force sync complete: ${result.result.docsUploaded} docs, ${result.result.assetsUploaded} assets`);
+      } else if (result.error) {
+        await logError(`Force sync failed: ${result.error}`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await logError(`Force sync error: ${errorMsg}`);
+      updateStatusBar(this.statusBarEl, `Force sync error: ${errorMsg}`);
     }
   }
 }

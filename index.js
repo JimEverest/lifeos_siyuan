@@ -635,11 +635,35 @@ var DEFAULT_SETTINGS = {
     // 不限制空闲时
     maxConcurrency: 5
     // 最大并发数
+  },
+  syncLock: {
+    enabled: true,
+    // 默认启用分布式锁
+    lockTtl: 10 * 60 * 1e3,
+    // 10 分钟
+    firstCheckThreshold: 10 * 60 * 1e3,
+    // 10 分钟
+    secondCheckThreshold: 5 * 60 * 1e3,
+    // 5 分钟
+    jitterRange: 15 * 1e3
+    // 15 秒
   }
 };
 async function loadSettings(plugin) {
   const data = await plugin.loadData(SETTINGS_FILE);
-  return { ...DEFAULT_SETTINGS, ...data ?? {} };
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    ...data ?? {},
+    autoSync: {
+      ...DEFAULT_SETTINGS.autoSync,
+      ...data?.autoSync ?? {}
+    },
+    syncLock: {
+      ...DEFAULT_SETTINGS.syncLock,
+      ...data?.syncLock ?? {}
+    }
+  };
+  return settings;
 }
 async function saveSettings(plugin, settings) {
   await plugin.saveData(SETTINGS_FILE, settings);
@@ -1133,6 +1157,562 @@ async function exportCurrentDocToGit(plugin, docId, blockId, settings, onProgres
   }
 }
 
+// src/sync-lock.ts
+init_logger();
+
+// src/device-manager.ts
+init_logger();
+var STORAGE_KEY_DEVICE_ID = "lifeos-sync-device-id";
+var STORAGE_KEY_DEVICE_NAME = "lifeos-sync-device-name";
+var STORAGE_KEY_DEVICE_CREATED = "lifeos-sync-device-created";
+function generateDeviceId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === "x" ? r : r & 3 | 8;
+    return v.toString(16);
+  });
+}
+function guessDefaultDeviceName() {
+  try {
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes("electron")) {
+      if (ua.includes("windows")) return "Desktop-Windows";
+      if (ua.includes("mac")) return "Desktop-Mac";
+      if (ua.includes("linux")) return "Desktop-Linux";
+      return "Desktop";
+    }
+    if (ua.includes("android")) return "Android";
+    if (ua.includes("iphone")) return "iPhone";
+    if (ua.includes("ipad")) return "iPad";
+    const hostname = window.location.hostname;
+    if (hostname && hostname !== "localhost" && hostname !== "127.0.0.1") {
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
+        return `Browser-${hostname}`;
+      }
+      return `Browser-${hostname.split(".")[0]}`;
+    }
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return "Localhost-Browser";
+    }
+    return "Unknown-Device";
+  } catch (e) {
+    return "Unknown-Device";
+  }
+}
+function getDeviceId() {
+  try {
+    let deviceId = localStorage.getItem(STORAGE_KEY_DEVICE_ID);
+    if (!deviceId) {
+      deviceId = generateDeviceId();
+      localStorage.setItem(STORAGE_KEY_DEVICE_ID, deviceId);
+      localStorage.setItem(STORAGE_KEY_DEVICE_CREATED, Date.now().toString());
+      if (!localStorage.getItem(STORAGE_KEY_DEVICE_NAME)) {
+        const defaultName = guessDefaultDeviceName();
+        localStorage.setItem(STORAGE_KEY_DEVICE_NAME, defaultName);
+      }
+      console.log(`[DeviceManager] Generated new device ID: ${deviceId}`);
+    }
+    return deviceId;
+  } catch (e) {
+    console.error("[DeviceManager] localStorage not available, using session ID");
+    return `temp-${generateDeviceId()}`;
+  }
+}
+function getDeviceName() {
+  try {
+    const name = localStorage.getItem(STORAGE_KEY_DEVICE_NAME);
+    if (name) {
+      return name;
+    }
+    const defaultName = guessDefaultDeviceName();
+    localStorage.setItem(STORAGE_KEY_DEVICE_NAME, defaultName);
+    return defaultName;
+  } catch (e) {
+    return "Unknown-Device";
+  }
+}
+function setDeviceName(name) {
+  try {
+    const trimmedName = name.trim();
+    if (trimmedName) {
+      localStorage.setItem(STORAGE_KEY_DEVICE_NAME, trimmedName);
+      console.log(`[DeviceManager] Device name set to: ${trimmedName}`);
+    }
+  } catch (e) {
+    console.error("[DeviceManager] Failed to set device name:", e);
+  }
+}
+function getDeviceInfo() {
+  const deviceId = getDeviceId();
+  const deviceName = getDeviceName();
+  let createdAt = 0;
+  try {
+    const createdStr = localStorage.getItem(STORAGE_KEY_DEVICE_CREATED);
+    if (createdStr) {
+      createdAt = parseInt(createdStr, 10);
+    }
+  } catch (e) {
+  }
+  return {
+    deviceId,
+    deviceName,
+    createdAt
+  };
+}
+function regenerateDeviceId() {
+  try {
+    const newId = generateDeviceId();
+    localStorage.setItem(STORAGE_KEY_DEVICE_ID, newId);
+    localStorage.setItem(STORAGE_KEY_DEVICE_CREATED, Date.now().toString());
+    console.log(`[DeviceManager] Regenerated device ID: ${newId}`);
+    return newId;
+  } catch (e) {
+    console.error("[DeviceManager] Failed to regenerate device ID:", e);
+    return getDeviceId();
+  }
+}
+function getShortDeviceId() {
+  const fullId = getDeviceId();
+  return fullId.substring(0, 8);
+}
+async function initDeviceManager() {
+  const info = getDeviceInfo();
+  await logInfo(`[DeviceManager] Device initialized: ${info.deviceName} (${info.deviceId.substring(0, 8)}...)`);
+}
+
+// src/sync-lock.ts
+var LOCK_FILE_PATH = ".sync-in-progress";
+var DEFAULT_SYNC_LOCK_SETTINGS = {
+  enabled: true,
+  lockTtl: 10 * 60 * 1e3,
+  // 10 分钟
+  firstCheckThreshold: 10 * 60 * 1e3,
+  // 10 分钟
+  secondCheckThreshold: 5 * 60 * 1e3,
+  // 5 分钟
+  jitterRange: 15 * 1e3
+  // 15 秒
+};
+function formatTimeReadable(timestamp) {
+  try {
+    const date = new Date(timestamp);
+    const utc8Offset = 8 * 60 * 60 * 1e3;
+    const utc8Date = new Date(date.getTime() + utc8Offset);
+    const year = utc8Date.getUTCFullYear();
+    const month = String(utc8Date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(utc8Date.getUTCDate()).padStart(2, "0");
+    const hours = String(utc8Date.getUTCHours()).padStart(2, "0");
+    const minutes = String(utc8Date.getUTCMinutes()).padStart(2, "0");
+    const seconds = String(utc8Date.getUTCSeconds()).padStart(2, "0");
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} (UTC+8)`;
+  } catch (e) {
+    return "Invalid Date";
+  }
+}
+function calculateJitter(deviceId, jitterRange) {
+  let hash = 0;
+  for (let i = 0; i < deviceId.length; i++) {
+    const char = deviceId.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+  const absHash = Math.abs(hash);
+  return absHash % jitterRange;
+}
+function formatRemainingTime(milliseconds) {
+  if (milliseconds <= 0) return "0s";
+  const seconds = Math.ceil(milliseconds / 1e3);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+async function proxyFetch2(url, options) {
+  const headers = [];
+  if (options.headers) {
+    if (options.headers instanceof Headers) {
+      options.headers.forEach((value, key) => {
+        headers.push({ [key]: value });
+      });
+    } else if (Array.isArray(options.headers)) {
+      for (const [key, value] of options.headers) {
+        headers.push({ [key]: value });
+      }
+    } else {
+      for (const [key, value] of Object.entries(options.headers)) {
+        headers.push({ [key]: value });
+      }
+    }
+  }
+  let payload = null;
+  if (options.body) {
+    if (typeof options.body === "string") {
+      try {
+        payload = JSON.parse(options.body);
+      } catch {
+        payload = options.body;
+      }
+    } else {
+      payload = options.body;
+    }
+  }
+  const proxyRes = await fetch("/api/network/forwardProxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url,
+      method: options.method || "GET",
+      headers,
+      payload,
+      timeout: 3e4
+    })
+  });
+  if (!proxyRes.ok) {
+    const errorText = await proxyRes.text();
+    throw new Error(`SiYuan proxy request failed: ${errorText}`);
+  }
+  const proxyData = await proxyRes.json();
+  if (proxyData.code !== 0) {
+    throw new Error(`SiYuan proxy error: ${proxyData.msg || "Unknown error"}`);
+  }
+  const responseData = proxyData.data;
+  if (!responseData) {
+    throw new Error("SiYuan forwardProxy returned null data");
+  }
+  return {
+    ok: responseData.status >= 200 && responseData.status < 300,
+    status: responseData.status,
+    statusText: responseData.statusText || "",
+    headers: new Headers(responseData.headers || {}),
+    text: async () => responseData.body || "",
+    json: async () => {
+      try {
+        return JSON.parse(responseData.body || "{}");
+      } catch {
+        return {};
+      }
+    }
+  };
+}
+async function getLastCommitTime(settings) {
+  const repo = parseRepoUrl(settings.repoUrl);
+  if (!repo) {
+    throw new Error("Invalid repo URL");
+  }
+  const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/commits/${settings.branch}`;
+  try {
+    const res = await proxyFetch2(url, {
+      method: "GET",
+      headers: {
+        Authorization: `token ${settings.token}`,
+        Accept: "application/vnd.github+json"
+      }
+    });
+    if (!res.ok) {
+      if (res.status === 404) {
+        return 0;
+      }
+      const text = await res.text();
+      throw new Error(`Failed to get last commit: ${text}`);
+    }
+    const data = await res.json();
+    if (data && data.commit && data.commit.author && data.commit.author.date) {
+      return new Date(data.commit.author.date).getTime();
+    }
+    return 0;
+  } catch (e) {
+    await logError(`[SyncLock] Failed to get last commit time: ${e}`);
+    return 0;
+  }
+}
+async function getSyncLock(settings) {
+  const repo = parseRepoUrl(settings.repoUrl);
+  if (!repo) {
+    throw new Error("Invalid repo URL");
+  }
+  const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/contents/${LOCK_FILE_PATH}?ref=${settings.branch}`;
+  try {
+    const res = await proxyFetch2(url, {
+      method: "GET",
+      headers: {
+        Authorization: `token ${settings.token}`,
+        Accept: "application/vnd.github+json"
+      }
+    });
+    if (res.status === 404) {
+      return null;
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to get lock file: ${text}`);
+    }
+    const data = await res.json();
+    if (data && data.content) {
+      const content = atob(data.content.replace(/\n/g, ""));
+      const lockInfo = JSON.parse(content);
+      return lockInfo;
+    }
+    return null;
+  } catch (e) {
+    await logError(`[SyncLock] Failed to get sync lock: ${e}`);
+    return null;
+  }
+}
+async function getLockFileSha(settings) {
+  const repo = parseRepoUrl(settings.repoUrl);
+  if (!repo) {
+    return null;
+  }
+  const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/contents/${LOCK_FILE_PATH}?ref=${settings.branch}`;
+  try {
+    const res = await proxyFetch2(url, {
+      method: "GET",
+      headers: {
+        Authorization: `token ${settings.token}`,
+        Accept: "application/vnd.github+json"
+      }
+    });
+    if (res.status === 404) {
+      return null;
+    }
+    if (!res.ok) {
+      return null;
+    }
+    const data = await res.json();
+    return data && data.sha ? data.sha : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function createSyncLock(settings, lockSettings) {
+  const repo = parseRepoUrl(settings.repoUrl);
+  if (!repo) {
+    throw new Error("Invalid repo URL");
+  }
+  const deviceId = getDeviceId();
+  const deviceName = getDeviceName();
+  const now = Date.now();
+  const lockInfo = {
+    deviceId,
+    deviceName,
+    startTime: now,
+    startTimeReadable: formatTimeReadable(now),
+    ttl: lockSettings.lockTtl,
+    expiresAt: now + lockSettings.lockTtl,
+    expiresAtReadable: formatTimeReadable(now + lockSettings.lockTtl)
+  };
+  const content = JSON.stringify(lockInfo, null, 2);
+  const base64Content = btoa(unescape(encodeURIComponent(content)));
+  const existingSha = await getLockFileSha(settings);
+  const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/contents/${LOCK_FILE_PATH}`;
+  try {
+    const body = {
+      message: `[LifeOS Sync] Lock acquired by ${deviceName}`,
+      content: base64Content,
+      branch: settings.branch
+    };
+    if (existingSha) {
+      body.sha = existingSha;
+    }
+    const res = await proxyFetch2(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `token ${settings.token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      await logError(`[SyncLock] Failed to create lock: ${text}`);
+      return false;
+    }
+    await logInfo(`[SyncLock] Lock acquired by ${deviceName} (${deviceId.substring(0, 8)})`);
+    return true;
+  } catch (e) {
+    await logError(`[SyncLock] Failed to create lock: ${e}`);
+    return false;
+  }
+}
+async function releaseSyncLock(settings) {
+  const repo = parseRepoUrl(settings.repoUrl);
+  if (!repo) {
+    return false;
+  }
+  const sha = await getLockFileSha(settings);
+  if (!sha) {
+    return true;
+  }
+  const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/contents/${LOCK_FILE_PATH}`;
+  const deviceName = getDeviceName();
+  try {
+    const res = await proxyFetch2(url, {
+      method: "DELETE",
+      headers: {
+        Authorization: `token ${settings.token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        message: `[LifeOS Sync] Lock released by ${deviceName}`,
+        sha,
+        branch: settings.branch
+      })
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      await logError(`[SyncLock] Failed to release lock: ${text}`);
+      return false;
+    }
+    await logInfo(`[SyncLock] Lock released by ${deviceName}`);
+    return true;
+  } catch (e) {
+    await logError(`[SyncLock] Failed to release lock: ${e}`);
+    return false;
+  }
+}
+async function checkCanSync(settings, lockSettings, onStatus) {
+  const deviceId = getDeviceId();
+  const deviceName = getDeviceName();
+  await logInfo(`[SyncLock] Checking sync eligibility for ${deviceName}`);
+  onStatus?.("Checking for existing sync lock...");
+  const existingLock = await getSyncLock(settings);
+  if (existingLock) {
+    const now = Date.now();
+    if (existingLock.deviceId === deviceId) {
+      await logInfo(`[SyncLock] Found stale lock from this device, will override`);
+      return { canSync: true };
+    }
+    if (now < existingLock.expiresAt) {
+      const remainingTime = existingLock.expiresAt - now;
+      const reason = `${existingLock.deviceName} is syncing (expires in ${formatRemainingTime(remainingTime)})`;
+      await logInfo(`[SyncLock] Cannot sync: ${reason}`);
+      return {
+        canSync: false,
+        reason,
+        lockInfo: existingLock
+      };
+    } else {
+      await logInfo(`[SyncLock] Found expired lock from ${existingLock.deviceName}, will override`);
+    }
+  }
+  onStatus?.("Checking last commit time...");
+  const lastCommitTime = await getLastCommitTime(settings);
+  if (lastCommitTime > 0) {
+    const timeSinceLastCommit = Date.now() - lastCommitTime;
+    if (timeSinceLastCommit < lockSettings.firstCheckThreshold) {
+      const threshold = lockSettings.firstCheckThreshold / 6e4;
+      const sinceMinutes = Math.floor(timeSinceLastCommit / 6e4);
+      const reason = `Last sync ${sinceMinutes}m ago (threshold: ${threshold}m)`;
+      await logInfo(`[SyncLock] Cannot sync: ${reason}`);
+      return {
+        canSync: false,
+        reason
+      };
+    }
+  }
+  const jitterTime = calculateJitter(deviceId, lockSettings.jitterRange);
+  await logInfo(`[SyncLock] Jitter time calculated: ${jitterTime}ms`);
+  return {
+    canSync: true,
+    waitTime: jitterTime
+  };
+}
+async function waitWithCountdown(milliseconds, onCountdown) {
+  const startTime = Date.now();
+  const endTime = startTime + milliseconds;
+  return new Promise((resolve) => {
+    const tick = () => {
+      const now = Date.now();
+      const remaining = Math.max(0, endTime - now);
+      if (remaining > 0) {
+        onCountdown?.(remaining);
+        setTimeout(tick, 1e3);
+      } else {
+        onCountdown?.(0);
+        resolve();
+      }
+    };
+    tick();
+  });
+}
+async function checkCanSyncAfterJitter(settings, lockSettings, onStatus) {
+  const deviceId = getDeviceId();
+  const deviceName = getDeviceName();
+  await logInfo(`[SyncLock] Second check after jitter for ${deviceName}`);
+  onStatus?.("Double-checking for sync lock...");
+  const existingLock = await getSyncLock(settings);
+  if (existingLock) {
+    const now = Date.now();
+    if (existingLock.deviceId === deviceId) {
+      return { canSync: true };
+    }
+    if (now < existingLock.expiresAt) {
+      const remainingTime = existingLock.expiresAt - now;
+      const reason = `${existingLock.deviceName} acquired lock during jitter (expires in ${formatRemainingTime(remainingTime)})`;
+      await logInfo(`[SyncLock] Cannot sync after jitter: ${reason}`);
+      return {
+        canSync: false,
+        reason,
+        lockInfo: existingLock
+      };
+    }
+  }
+  onStatus?.("Double-checking last commit time...");
+  const lastCommitTime = await getLastCommitTime(settings);
+  if (lastCommitTime > 0) {
+    const timeSinceLastCommit = Date.now() - lastCommitTime;
+    if (timeSinceLastCommit < lockSettings.secondCheckThreshold) {
+      const threshold = lockSettings.secondCheckThreshold / 6e4;
+      const sinceMinutes = Math.floor(timeSinceLastCommit / 6e4);
+      const reason = `Someone synced during jitter (${sinceMinutes}m ago, threshold: ${threshold}m)`;
+      await logInfo(`[SyncLock] Cannot sync after jitter: ${reason}`);
+      return {
+        canSync: false,
+        reason
+      };
+    }
+  }
+  await logInfo(`[SyncLock] Second check passed, can proceed with sync`);
+  return { canSync: true };
+}
+async function acquireSyncLock(settings, lockSettings, onStatus, onCountdown) {
+  if (!lockSettings.enabled) {
+    await logInfo("[SyncLock] Lock mechanism disabled, proceeding with sync");
+    return { canSync: true };
+  }
+  const firstCheck = await checkCanSync(settings, lockSettings, onStatus);
+  if (!firstCheck.canSync) {
+    return firstCheck;
+  }
+  if (firstCheck.waitTime && firstCheck.waitTime > 0) {
+    onStatus?.(`Waiting ${Math.ceil(firstCheck.waitTime / 1e3)}s to avoid conflicts...`);
+    await waitWithCountdown(firstCheck.waitTime, onCountdown);
+  }
+  const secondCheck = await checkCanSyncAfterJitter(settings, lockSettings, onStatus);
+  if (!secondCheck.canSync) {
+    return secondCheck;
+  }
+  onStatus?.("Acquiring sync lock...");
+  const lockCreated = await createSyncLock(settings, lockSettings);
+  if (!lockCreated) {
+    return {
+      canSync: false,
+      reason: "Failed to create lock file"
+    };
+  }
+  return { canSync: true };
+}
+
 // src/ui.ts
 function createStatusBar(plugin) {
   const el = document.createElement("span");
@@ -1156,6 +1736,129 @@ function updateStatusBar(el, message) {
   }
   el.textContent = message;
   void el.offsetHeight;
+}
+function showJitterCountdown(el, remainingMs) {
+  const seconds = Math.ceil(remainingMs / 1e3);
+  updateStatusBar(el, `\u23F3 Waiting to sync... (${seconds}s)`);
+}
+function showSyncCompleteStatus(el, docs, assets, timeSeconds) {
+  updateStatusBar(el, `\u2705 Sync complete: ${docs} docs, ${assets} assets (${timeSeconds.toFixed(1)}s)`);
+}
+function showSyncErrorStatus(el, error) {
+  const shortError = error.length > 50 ? error.substring(0, 47) + "..." : error;
+  updateStatusBar(el, `\u274C Sync failed: ${shortError}`);
+}
+function showSyncSkippedStatus(el, reason) {
+  updateStatusBar(el, `\u23F8\uFE0F Sync skipped: ${reason}`);
+}
+function showForceSyncStatus(el) {
+  updateStatusBar(el, `\u26A0\uFE0F Force sync in progress...`);
+}
+async function showForceConfirmDialog() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 99999;
+    `;
+    const dialog = document.createElement("div");
+    dialog.style.cssText = `
+      background: var(--b3-theme-background, #fff);
+      border-radius: 8px;
+      padding: 20px;
+      max-width: 400px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    `;
+    dialog.innerHTML = `
+      <h3 style="margin: 0 0 12px 0; color: var(--b3-theme-on-background, #333);">
+        \u26A0\uFE0F Force Sync Confirmation
+      </h3>
+      <p style="margin: 0 0 16px 0; color: var(--b3-theme-on-surface, #666); font-size: 14px;">
+        This will override any existing sync lock and ignore commit time checks.<br><br>
+        <strong>Type "yes" to confirm:</strong>
+      </p>
+      <input
+        type="text"
+        id="force-sync-input"
+        style="
+          width: 100%;
+          padding: 8px 12px;
+          border: 1px solid var(--b3-border-color, #ddd);
+          border-radius: 4px;
+          font-size: 14px;
+          box-sizing: border-box;
+          margin-bottom: 16px;
+        "
+        placeholder="Type 'yes' to confirm"
+      />
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button
+          id="force-sync-cancel"
+          style="
+            padding: 8px 16px;
+            border: 1px solid var(--b3-border-color, #ddd);
+            border-radius: 4px;
+            background: var(--b3-theme-surface, #f5f5f5);
+            cursor: pointer;
+          "
+        >
+          Cancel
+        </button>
+        <button
+          id="force-sync-confirm"
+          style="
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            background: #e53935;
+            color: white;
+            cursor: pointer;
+          "
+        >
+          Force Sync
+        </button>
+      </div>
+    `;
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    const input = dialog.querySelector("#force-sync-input");
+    const cancelBtn = dialog.querySelector("#force-sync-cancel");
+    const confirmBtn = dialog.querySelector("#force-sync-confirm");
+    const cleanup = () => {
+      document.body.removeChild(overlay);
+    };
+    cancelBtn.onclick = () => {
+      cleanup();
+      resolve(false);
+    };
+    confirmBtn.onclick = () => {
+      const value = input.value.trim().toLowerCase();
+      cleanup();
+      resolve(value === "yes");
+    };
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        confirmBtn.click();
+      } else if (e.key === "Escape") {
+        cancelBtn.click();
+      }
+    };
+    overlay.onclick = (e) => {
+      if (e.target === overlay) {
+        cleanup();
+        resolve(false);
+      }
+    };
+    setTimeout(() => input.focus(), 100);
+  });
 }
 
 // src/index.ts
@@ -1521,11 +2224,12 @@ async function performIncrementalSync(plugin, settings, onProgress) {
             result.docsUploaded++;
           } catch (error) {
             result.docsFailed++;
+            const errorMsg = error instanceof Error ? error.message : String(error);
             result.errors.push({
               path: `doc:${doc.id}`,
-              error: error.message || String(error)
+              error: errorMsg
             });
-            await logError(`[IncrementalSync] Failed to sync doc ${doc.id}: ${error}`);
+            await logError(`[IncrementalSync] Failed to sync doc ${doc.id}: ${errorMsg}`);
           }
         }
         await logInfo(`[IncrementalSync] Step 3/6: Uploaded ${result.docsUploaded}/${changedDocs.length} documents`);
@@ -1610,12 +2314,94 @@ async function getLastAssetSyncTime(plugin) {
 async function updateLastAssetSyncTime(plugin, time) {
   await plugin.saveData(LAST_ASSET_SYNC_KEY, time);
 }
+async function performIncrementalSyncWithLock(plugin, settings, statusBarEl, onProgress) {
+  const deviceName = getDeviceName();
+  await logInfo(`[IncrementalSync] Starting sync with lock for device: ${deviceName}`);
+  const lockSettings = settings.syncLock || {
+    enabled: true,
+    lockTtl: 10 * 60 * 1e3,
+    firstCheckThreshold: 10 * 60 * 1e3,
+    secondCheckThreshold: 5 * 60 * 1e3,
+    jitterRange: 15 * 1e3
+  };
+  if (!lockSettings.enabled) {
+    await logInfo(`[IncrementalSync] Lock mechanism disabled, proceeding directly`);
+    try {
+      const result = await performIncrementalSync(plugin, settings, onProgress);
+      return { executed: true, result };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      showSyncErrorStatus(statusBarEl, errorMsg);
+      return { executed: false, error: errorMsg };
+    }
+  }
+  const lockResult = await acquireSyncLock(
+    settings,
+    lockSettings,
+    onProgress,
+    (remaining) => showJitterCountdown(statusBarEl, remaining)
+  );
+  if (!lockResult.canSync) {
+    const reason = lockResult.reason || "Unknown reason";
+    await logInfo(`[IncrementalSync] Sync skipped: ${reason}`);
+    showSyncSkippedStatus(statusBarEl, reason);
+    return { executed: false, skippedReason: reason };
+  }
+  try {
+    await logInfo(`[IncrementalSync] Lock acquired, starting sync`);
+    const result = await performIncrementalSync(plugin, settings, onProgress);
+    const timeSeconds = result.totalTime / 1e3;
+    showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
+    return { executed: true, result };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await logError(`[IncrementalSync] Sync failed: ${errorMsg}`);
+    showSyncErrorStatus(statusBarEl, errorMsg);
+    return { executed: false, error: errorMsg };
+  } finally {
+    await logInfo(`[IncrementalSync] Releasing lock`);
+    await releaseSyncLock(settings);
+  }
+}
+async function performForceSyncWithLock(plugin, settings, statusBarEl, onProgress) {
+  const deviceName = getDeviceName();
+  await logInfo(`[IncrementalSync] Starting FORCE sync for device: ${deviceName}`);
+  showForceSyncStatus(statusBarEl);
+  const lockSettings = settings.syncLock || {
+    enabled: true,
+    lockTtl: 10 * 60 * 1e3,
+    firstCheckThreshold: 10 * 60 * 1e3,
+    secondCheckThreshold: 5 * 60 * 1e3,
+    jitterRange: 15 * 1e3
+  };
+  if (lockSettings.enabled) {
+    await logInfo(`[IncrementalSync] Force creating lock`);
+    await createSyncLock(settings, lockSettings);
+  }
+  try {
+    const result = await performIncrementalSync(plugin, settings, onProgress);
+    const timeSeconds = result.totalTime / 1e3;
+    showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
+    return { executed: true, result };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await logError(`[IncrementalSync] Force sync failed: ${errorMsg}`);
+    showSyncErrorStatus(statusBarEl, errorMsg);
+    return { executed: false, error: errorMsg };
+  } finally {
+    if (lockSettings.enabled) {
+      await logInfo(`[IncrementalSync] Releasing lock after force sync`);
+      await releaseSyncLock(settings);
+    }
+  }
+}
 
 // src/auto-sync-scheduler.ts
 var AutoSyncScheduler = class _AutoSyncScheduler {
-  constructor(plugin, settings, onProgress) {
+  constructor(plugin, settings, onProgress, statusBarEl) {
     this.timerId = null;
     this.isRunning = false;
+    this.statusBarEl = null;
     if (_AutoSyncScheduler.globalInstance) {
       void _AutoSyncScheduler.globalInstance.stop();
       _AutoSyncScheduler.globalInstance = null;
@@ -1623,6 +2409,7 @@ var AutoSyncScheduler = class _AutoSyncScheduler {
     this.plugin = plugin;
     this.settings = settings;
     this.onProgress = onProgress;
+    this.statusBarEl = statusBarEl || null;
     _AutoSyncScheduler.globalInstance = this;
   }
   static {
@@ -1675,7 +2462,7 @@ var AutoSyncScheduler = class _AutoSyncScheduler {
     return this.isRunning;
   }
   /**
-   * 执行一次同步
+   * 执行一次同步（带分布式锁）
    */
   async runSync() {
     if (this.isRunning) {
@@ -1684,18 +2471,27 @@ var AutoSyncScheduler = class _AutoSyncScheduler {
     }
     this.isRunning = true;
     try {
-      await logInfo("[AutoSync] Starting sync cycle");
+      await logInfo("[AutoSync] Starting sync cycle with lock check");
       this.onProgress?.("[AutoSync] Starting...");
-      const result = await performIncrementalSync(
+      const lockedResult = await performIncrementalSyncWithLock(
         this.plugin,
         this.settings,
+        this.statusBarEl,
         this.onProgress
       );
-      await this.logSyncResult(result);
-      this.onProgress?.(this.formatSyncResult(result));
+      if (lockedResult.executed && lockedResult.result) {
+        await this.logSyncResult(lockedResult.result);
+        this.onProgress?.(this.formatSyncResult(lockedResult.result));
+      } else if (lockedResult.skippedReason) {
+        await logInfo(`[AutoSync] Sync skipped: ${lockedResult.skippedReason}`);
+      } else if (lockedResult.error) {
+        await logError(`[AutoSync] Sync error: ${lockedResult.error}`);
+        this.onProgress?.(`[AutoSync] Error: ${lockedResult.error}`);
+      }
     } catch (error) {
-      await logError(`[AutoSync] Sync failed: ${error}`);
-      this.onProgress?.(`[AutoSync] Failed: ${error.message}`);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await logError(`[AutoSync] Sync failed: ${errorMsg}`);
+      this.onProgress?.(`[AutoSync] Failed: ${errorMsg}`);
     } finally {
       this.isRunning = false;
     }
@@ -1747,18 +2543,27 @@ ${result.errors.map((e) => `  ${e.path}: ${e.error}`).join("\n")}`);
     return this.timerId !== null;
   }
   /**
-   * 手动触发一次同步
+   * 手动触发一次同步（带分布式锁）
    */
   async triggerSync() {
-    await logInfo("[AutoSync] Manual sync triggered");
+    await logInfo("[AutoSync] Manual sync triggered with lock check");
     this.onProgress?.("[AutoSync] Manual sync...");
-    const result = await performIncrementalSync(
+    const lockedResult = await performIncrementalSyncWithLock(
       this.plugin,
       this.settings,
+      this.statusBarEl,
       this.onProgress
     );
-    await this.logSyncResult(result);
-    return result;
+    if (lockedResult.executed && lockedResult.result) {
+      await this.logSyncResult(lockedResult.result);
+    }
+    return lockedResult;
+  }
+  /**
+   * 设置状态栏元素
+   */
+  setStatusBarEl(el) {
+    this.statusBarEl = el;
   }
 };
 
@@ -1773,7 +2578,8 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
   async onload() {
     this.settings = await loadSettings(this);
     initLogger();
-    await logInfo("plugin loaded v0.4.2");
+    await logInfo("plugin loaded v0.4.3");
+    await initDeviceManager();
     this.statusBarEl = createStatusBar(this);
     this.addTopBar({
       icon: "iconSync",
@@ -1784,7 +2590,8 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       this.autoSyncScheduler = new AutoSyncScheduler(
         this,
         this.settings,
-        (message) => updateStatusBar(this.statusBarEl, message)
+        (message) => updateStatusBar(this.statusBarEl, message),
+        this.statusBarEl
       );
       await this.autoSyncScheduler.start();
       await logInfo("Auto sync scheduler started");
@@ -1834,6 +2641,13 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
         void this.clearCacheAndFullSync();
       }
     });
+    menu.addItem({
+      label: "\u26A0\uFE0F Force Sync (Override Lock)",
+      icon: "iconWarning",
+      click: () => {
+        void this.forceSync();
+      }
+    });
     if (this.autoSyncScheduler?.getIsRunning()) {
       menu.addItem({
         label: "\u26A0\uFE0F Force Stop Sync",
@@ -1881,8 +2695,23 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0;">LifeOS Sync Settings</h3>
-        <span style="opacity:0.6; font-size:12px;">v0.4.2</span>
+        <span style="opacity:0.6; font-size:12px;">v0.4.3</span>
       </div>
+
+      <h4 style="margin-top:0;margin-bottom:8px;">\u{1F4F1} Device Settings</h4>
+      <div style="background:var(--b3-theme-surface-lighter,#f5f5f5);padding:12px;border-radius:6px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:12px;opacity:0.7;">Device ID: <code>${getShortDeviceId()}...</code></span>
+          <button class="b3-button b3-button--outline" id="${dialogId}-regenerate" style="padding:2px 8px;font-size:11px;">Regenerate</button>
+        </div>
+        <label class="b3-label" style="margin-bottom:0;">
+          Device Name
+          <input class="b3-text-field fn__block" id="${dialogId}-devicename" value="${getDeviceName()}" placeholder="e.g. Desktop-Windows">
+        </label>
+        <div style="font-size:11px;opacity:0.6;margin-top:4px;">Stored locally, not synced between devices</div>
+      </div>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">\u{1F517} GitHub Settings</h4>
       <label class="b3-label">Repo URL
         <input class="b3-text-field fn__block" id="${dialogId}-repo" value="${s.repoUrl}">
       </label>
@@ -1898,6 +2727,8 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       <label class="b3-label">Assets dir
         <input class="b3-text-field fn__block" id="${dialogId}-assets" value="${s.assetsDir}">
       </label>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">\u{1F6AB} Ignore Settings</h4>
       <label class="b3-label">Ignore notebooks (*, comma separated)
         <input class="b3-text-field fn__block" id="${dialogId}-ignb" value="${s.ignoreNotebooks.join(", ")}">
       </label>
@@ -1928,8 +2759,8 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
           <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-cleanfm" ${s.cleanFrontmatter ? "checked" : ""}>
         </div>
       </label>
-      <div class="fn__space"></div>
-      <h4 style="margin-top:16px;margin-bottom:8px;">Auto Sync</h4>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">\u23F0 Auto Sync</h4>
       <label class="b3-label">
         <div class="fn__flex">
           <div class="fn__flex-1">
@@ -1961,6 +2792,35 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
           <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-syncassets" ${s.autoSync.syncAssets ? "checked" : ""}>
         </div>
       </label>
+
+      <h4 style="margin-top:16px;margin-bottom:8px;">\u{1F512} Distributed Lock (Multi-device Conflict Prevention)</h4>
+      <label class="b3-label">
+        <div class="fn__flex">
+          <div class="fn__flex-1">
+            Enable distributed lock
+            <div class="b3-label__text">Prevent multiple devices from syncing simultaneously</div>
+          </div>
+          <span class="fn__space"></span>
+          <input class="b3-switch fn__flex-center" type="checkbox" id="${dialogId}-lockenabled" ${s.syncLock.enabled ? "checked" : ""}>
+        </div>
+      </label>
+      <label class="b3-label">Lock timeout / TTL (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-lockttl" value="${Math.round(s.syncLock.lockTtl / 6e4)}" min="1" max="60">
+        <div class="b3-label__text">If a device crashes, lock auto-expires after this time</div>
+      </label>
+      <label class="b3-label">First check threshold (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-firstthreshold" value="${Math.round(s.syncLock.firstCheckThreshold / 6e4)}" min="1" max="60">
+        <div class="b3-label__text">Skip sync if last commit was within this time</div>
+      </label>
+      <label class="b3-label">Second check threshold (minutes)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-secondthreshold" value="${Math.round(s.syncLock.secondCheckThreshold / 6e4)}" min="1" max="30">
+        <div class="b3-label__text">Shorter threshold for the double-check after jitter</div>
+      </label>
+      <label class="b3-label">Random jitter range (seconds)
+        <input class="b3-text-field fn__block" type="number" id="${dialogId}-jitter" value="${Math.round(s.syncLock.jitterRange / 1e3)}" min="5" max="120">
+        <div class="b3-label__text">Random wait time to avoid conflicts (countdown shown in status bar)</div>
+      </label>
+
       <div class="fn__space"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end;">
         <button class="b3-button b3-button--cancel" id="${dialogId}-cancel">Cancel</button>
@@ -1975,6 +2835,10 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     };
     const doSave = async () => {
       const oldAutoSyncEnabled = this.settings.autoSync.enabled;
+      const newDeviceName = q(`#${dialogId}-devicename`).value.trim();
+      if (newDeviceName) {
+        setDeviceName(newDeviceName);
+      }
       this.settings = {
         ...s,
         repoUrl: (q(`#${dialogId}-repo`).value || "").trim(),
@@ -1994,6 +2858,13 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
           syncAssets: q(`#${dialogId}-syncassets`).checked,
           onlyWhenIdle: false,
           maxConcurrency: 5
+        },
+        syncLock: {
+          enabled: q(`#${dialogId}-lockenabled`).checked,
+          lockTtl: (parseInt(q(`#${dialogId}-lockttl`).value) || 10) * 60 * 1e3,
+          firstCheckThreshold: (parseInt(q(`#${dialogId}-firstthreshold`).value) || 10) * 60 * 1e3,
+          secondCheckThreshold: (parseInt(q(`#${dialogId}-secondthreshold`).value) || 5) * 60 * 1e3,
+          jitterRange: (parseInt(q(`#${dialogId}-jitter`).value) || 15) * 1e3
         }
       };
       await saveSettings(this, this.settings);
@@ -2006,7 +2877,8 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
           this.autoSyncScheduler = new AutoSyncScheduler(
             this,
             this.settings,
-            (message) => updateStatusBar(this.statusBarEl, message)
+            (message) => updateStatusBar(this.statusBarEl, message),
+            this.statusBarEl
           );
           await this.autoSyncScheduler.start();
         }
@@ -2017,6 +2889,15 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       await logInfo("Settings saved");
       destroy();
     };
+    q(`#${dialogId}-regenerate`)?.addEventListener("click", () => {
+      if (confirm("Are you sure you want to regenerate your device ID? This will change your device identity for sync lock purposes.")) {
+        regenerateDeviceId();
+        const shortIdEl = card.querySelector(`#${dialogId}-regenerate`)?.parentElement?.querySelector("code");
+        if (shortIdEl) {
+          shortIdEl.textContent = `${getShortDeviceId()}...`;
+        }
+      }
+    });
     q(`#${dialogId}-save`)?.addEventListener("click", () => {
       void doSave();
     });
@@ -2076,6 +2957,10 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
     }
   }
   async clearCacheAndFullSync() {
+    if (!this.settings) {
+      await logError("Settings not loaded");
+      return;
+    }
     try {
       updateStatusBar(this.statusBarEl, "Clearing cache...");
       await logInfo("[ClearCache] Starting to clear all cache");
@@ -2090,13 +2975,15 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       this.autoSyncScheduler = new AutoSyncScheduler(
         this,
         this.settings,
-        (message) => updateStatusBar(this.statusBarEl, message)
+        (message) => updateStatusBar(this.statusBarEl, message),
+        this.statusBarEl
       );
       await this.autoSyncScheduler.start();
       await logInfo("[ClearCache] Full sync triggered");
     } catch (error) {
-      await logError(`[ClearCache] Failed: ${error}`);
-      updateStatusBar(this.statusBarEl, `Clear cache failed: ${error.message}`);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await logError(`[ClearCache] Failed: ${errorMsg}`);
+      updateStatusBar(this.statusBarEl, `Clear cache failed: ${errorMsg}`);
     }
   }
   async toggleAutoSync() {
@@ -2109,7 +2996,8 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       this.autoSyncScheduler = new AutoSyncScheduler(
         this,
         this.settings,
-        (message) => updateStatusBar(this.statusBarEl, message)
+        (message) => updateStatusBar(this.statusBarEl, message),
+        this.statusBarEl
       );
       await this.autoSyncScheduler.start();
       await logInfo("Auto sync enabled");
@@ -2121,6 +3009,37 @@ var LifeosSyncPlugin = class extends import_siyuan.Plugin {
       }
       await logInfo("Auto sync disabled");
       updateStatusBar(this.statusBarEl, "Auto sync: OFF");
+    }
+  }
+  async forceSync() {
+    if (!this.settings) {
+      await logError("Settings not loaded");
+      return;
+    }
+    const confirmed = await showForceConfirmDialog();
+    if (!confirmed) {
+      await logInfo("Force sync cancelled by user");
+      updateStatusBar(this.statusBarEl, "Force sync cancelled");
+      return;
+    }
+    await logInfo("Force sync confirmed by user, starting...");
+    updateStatusBar(this.statusBarEl, "Force sync starting...");
+    try {
+      const result = await performForceSyncWithLock(
+        this,
+        this.settings,
+        this.statusBarEl,
+        (message) => updateStatusBar(this.statusBarEl, message)
+      );
+      if (result.executed && result.result) {
+        await logInfo(`Force sync complete: ${result.result.docsUploaded} docs, ${result.result.assetsUploaded} assets`);
+      } else if (result.error) {
+        await logError(`Force sync failed: ${result.error}`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await logError(`Force sync error: ${errorMsg}`);
+      updateStatusBar(this.statusBarEl, `Force sync error: ${errorMsg}`);
     }
   }
 };

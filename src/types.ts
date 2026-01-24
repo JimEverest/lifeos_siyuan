@@ -10,6 +10,7 @@ export interface Settings {
   ignorePaths: string[];
   ignoreTags: string[];
   autoSync: AutoSyncConfig;      // 自动同步配置
+  syncLock: SyncLockConfig;      // 分布式锁配置
 }
 
 export interface RepoInfo {
@@ -102,6 +103,18 @@ export interface AutoSyncConfig {
   syncAssets: boolean;           // 同步资源
   onlyWhenIdle: boolean;         // 仅在空闲时同步
   maxConcurrency: number;        // 最大并发数
+}
+
+// ============================================================================
+// Sync Lock Types (分布式锁)
+// ============================================================================
+
+export interface SyncLockConfig {
+  enabled: boolean;              // 是否启用分布式锁
+  lockTtl: number;               // 锁超时时间（毫秒），默认 600000 (10分钟)
+  firstCheckThreshold: number;   // 第一次检查阈值（毫秒），默认 600000 (10分钟)
+  secondCheckThreshold: number;  // 第二次检查阈值（毫秒），默认 300000 (5分钟)
+  jitterRange: number;           // 随机等待范围（毫秒），默认 15000 (15秒)
 }
 
 export interface IncrementalSyncResult {

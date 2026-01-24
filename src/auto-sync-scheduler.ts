@@ -2,12 +2,13 @@
  * Auto Sync Scheduler
  *
  * 自动同步调度器，支持定时触发增量同步
+ * v0.4.3: 集成分布式锁机制
  */
 
 import type { Plugin } from "siyuan";
 import type { Settings, IncrementalSyncResult } from "./types";
 import { logInfo, logError } from "./logger";
-import { performIncrementalSync } from "./incremental-sync";
+import { performIncrementalSync, performIncrementalSyncWithLock, LockedSyncResult } from "./incremental-sync";
 
 export class AutoSyncScheduler {
   private plugin: Plugin;
@@ -15,9 +16,15 @@ export class AutoSyncScheduler {
   private timerId: NodeJS.Timeout | null = null;
   private isRunning: boolean = false;
   private onProgress?: (message: string) => void;
+  private statusBarEl: HTMLElement | null = null;
   private static globalInstance: AutoSyncScheduler | null = null;
 
-  constructor(plugin: Plugin, settings: Settings, onProgress?: (message: string) => void) {
+  constructor(
+    plugin: Plugin,
+    settings: Settings,
+    onProgress?: (message: string) => void,
+    statusBarEl?: HTMLElement | null
+  ) {
     // 清理旧的全局实例
     if (AutoSyncScheduler.globalInstance) {
       void AutoSyncScheduler.globalInstance.stop();
@@ -27,6 +34,7 @@ export class AutoSyncScheduler {
     this.plugin = plugin;
     this.settings = settings;
     this.onProgress = onProgress;
+    this.statusBarEl = statusBarEl || null;
 
     // 注册为全局实例
     AutoSyncScheduler.globalInstance = this;
@@ -90,7 +98,7 @@ export class AutoSyncScheduler {
   }
 
   /**
-   * 执行一次同步
+   * 执行一次同步（带分布式锁）
    */
   private async runSync(): Promise<void> {
     if (this.isRunning) {
@@ -101,21 +109,35 @@ export class AutoSyncScheduler {
     this.isRunning = true;
 
     try {
-      await logInfo("[AutoSync] Starting sync cycle");
+      await logInfo("[AutoSync] Starting sync cycle with lock check");
       this.onProgress?.("[AutoSync] Starting...");
 
-      const result = await performIncrementalSync(
+      // 使用带锁的同步函数
+      const lockedResult = await performIncrementalSyncWithLock(
         this.plugin,
         this.settings,
+        this.statusBarEl,
         this.onProgress
       );
 
-      await this.logSyncResult(result);
-      this.onProgress?.(this.formatSyncResult(result));
+      if (lockedResult.executed && lockedResult.result) {
+        // 同步成功执行
+        await this.logSyncResult(lockedResult.result);
+        this.onProgress?.(this.formatSyncResult(lockedResult.result));
+      } else if (lockedResult.skippedReason) {
+        // 同步被跳过（锁或时间检查）
+        await logInfo(`[AutoSync] Sync skipped: ${lockedResult.skippedReason}`);
+        // 状态栏已由 performIncrementalSyncWithLock 更新
+      } else if (lockedResult.error) {
+        // 同步出错
+        await logError(`[AutoSync] Sync error: ${lockedResult.error}`);
+        this.onProgress?.(`[AutoSync] Error: ${lockedResult.error}`);
+      }
 
     } catch (error) {
-      await logError(`[AutoSync] Sync failed: ${error}`);
-      this.onProgress?.(`[AutoSync] Failed: ${error.message}`);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await logError(`[AutoSync] Sync failed: ${errorMsg}`);
+      this.onProgress?.(`[AutoSync] Failed: ${errorMsg}`);
     } finally {
       this.isRunning = false;
     }
@@ -175,19 +197,30 @@ export class AutoSyncScheduler {
   }
 
   /**
-   * 手动触发一次同步
+   * 手动触发一次同步（带分布式锁）
    */
-  async triggerSync(): Promise<IncrementalSyncResult> {
-    await logInfo("[AutoSync] Manual sync triggered");
+  async triggerSync(): Promise<LockedSyncResult> {
+    await logInfo("[AutoSync] Manual sync triggered with lock check");
     this.onProgress?.("[AutoSync] Manual sync...");
 
-    const result = await performIncrementalSync(
+    const lockedResult = await performIncrementalSyncWithLock(
       this.plugin,
       this.settings,
+      this.statusBarEl,
       this.onProgress
     );
 
-    await this.logSyncResult(result);
-    return result;
+    if (lockedResult.executed && lockedResult.result) {
+      await this.logSyncResult(lockedResult.result);
+    }
+
+    return lockedResult;
+  }
+
+  /**
+   * 设置状态栏元素
+   */
+  setStatusBarEl(el: HTMLElement | null): void {
+    this.statusBarEl = el;
   }
 }

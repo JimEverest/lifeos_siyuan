@@ -14,6 +14,8 @@
 - **⚡ Incremental Sync**: Only syncs changed documents and assets, avoiding full repository scans
 - **💾 Intelligent Cache System**: 30-50x performance improvement with hash-based change detection
 - **📦 Batch Operations**: Efficient parallel processing of multiple files
+- **🔒 Multi-Device Sync Lock**: Distributed lock mechanism prevents concurrent sync conflicts (v0.4.3)
+- **📱 Device Identity**: Each device has unique ID stored in localStorage (not synced by SiYuan)
 - **🔒 Multi-Environment Support**: Works seamlessly in HTTPS, HTTP, localhost, and Docker environments
 
 ### 🎯 Cache Mechanism Highlights
@@ -144,6 +146,18 @@ The cache system is the **core technology** enabling high-performance auto-sync 
 
 ### 🚀 Version History
 
+- **v0.4.3** (2026-01-24):
+  - 🔒 **Multi-device sync lock mechanism** - Prevents concurrent sync conflicts
+    - Distributed lock via GitHub `.sync-in-progress` file with TTL
+    - Last commit time check (configurable threshold)
+    - Random jitter (0-15s) with countdown display
+    - Double-check pattern before sync
+  - 📱 **Device identity management** - localStorage-based (NOT synced by SiYuan)
+    - Auto-generated UUID per device
+    - Customizable device name
+    - Regenerate device ID option
+  - ⚠️ **Force Sync option** - Override lock with "yes" confirmation
+  - ⚙️ **Configurable lock settings**: TTL, thresholds, jitter range
 - **v0.4.2** (2026-01-23):
   - 🐛 Fixed `Buffer is not defined` error in browser environment (asset upload now works)
   - 🐛 Fixed double exclamation mark in image links (`!![image]` → `![image]`)
@@ -159,6 +173,18 @@ The cache system is the **core technology** enabling high-performance auto-sync 
 - **v0.1.0**: Initial release with manual export
 
 ### 🐛 Known Issues & Solutions
+
+#### Multi-Device Sync Conflict Prevention (v0.4.3)
+**Problem**: Multiple devices syncing simultaneously could cause GitHub SHA conflicts and failed uploads.
+
+**Solution (v0.4.3)**: Distributed lock mechanism with:
+- `.sync-in-progress` lock file on GitHub with TTL (default 10 minutes)
+- Last commit time check (configurable threshold)
+- Random jitter (0-15 seconds) to avoid race conditions
+- Double-check pattern before acquiring lock
+- Force sync option for manual override
+
+**Status**: ✅ Resolved
 
 #### Multi-Device Sync Cache Mismatch
 **Problem**: When syncing across multiple devices (Desktop, Docker, Mobile), asset cache shard calculation may differ due to environment variations, causing assets to be marked as "not cached" even though they exist in cache files.

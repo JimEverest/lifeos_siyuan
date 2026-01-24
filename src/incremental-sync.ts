@@ -2,16 +2,31 @@
  * Incremental Sync Module
  *
  * 实现基于时间戳的增量同步，避免全量扫描
+ * v0.4.3: 添加分布式锁机制，防止多设备同时同步
  */
 
 import type { Plugin } from "siyuan";
-import type { Settings, IncrementalSyncResult, DocMetadata, AssetMetadata } from "./types";
+import type { Settings, IncrementalSyncResult, DocMetadata, AssetMetadata, SyncLockConfig } from "./types";
 import { logInfo, logError, flushAllLogs } from "./logger";
 import { getDocCacheEntry, updateDocCacheEntry, clearMemoryCache } from "./cache-manager";
 import { getAssetCacheEntry, updateAssetCacheEntry } from "./cache-manager";
 import { exportCurrentDocToGit } from "./exporter";
 import { uploadAssetWithCache } from "./assets-sync";
 import { listNotebooks, getDocInfo, clearNotebooksCache } from "./siyuan-api";
+import {
+  acquireSyncLock,
+  releaseSyncLock,
+  createSyncLock,
+  SyncLockCheckResult
+} from "./sync-lock";
+import { getDeviceName } from "./device-manager";
+import {
+  showJitterCountdown,
+  showSyncSkippedStatus,
+  showSyncCompleteStatus,
+  showSyncErrorStatus,
+  showForceSyncStatus
+} from "./ui";
 
 // ============================================================================
 // 文档增量扫描
@@ -296,11 +311,12 @@ export async function performIncrementalSync(
             result.docsUploaded++;
           } catch (error) {
             result.docsFailed++;
+            const errorMsg = error instanceof Error ? error.message : String(error);
             result.errors.push({
               path: `doc:${doc.id}`,
-              error: error.message || String(error)
+              error: errorMsg
             });
-            await logError(`[IncrementalSync] Failed to sync doc ${doc.id}: ${error}`);
+            await logError(`[IncrementalSync] Failed to sync doc ${doc.id}: ${errorMsg}`);
           }
         }
         await logInfo(`[IncrementalSync] Step 3/6: Uploaded ${result.docsUploaded}/${changedDocs.length} documents`);
@@ -411,10 +427,160 @@ export async function performIncrementalSync(
 const LAST_ASSET_SYNC_KEY = "last-asset-sync-time";
 
 async function getLastAssetSyncTime(plugin: Plugin): Promise<number> {
-  const time = await plugin.loadData(LAST_ASSET_SYNC_KEY);
+  const time = await plugin.loadData(LAST_ASSET_SYNC_KEY) as number | null | undefined;
   return time || 0;
 }
 
 async function updateLastAssetSyncTime(plugin: Plugin, time: number): Promise<void> {
   await plugin.saveData(LAST_ASSET_SYNC_KEY, time);
+}
+
+// ============================================================================
+// 带分布式锁的增量同步
+// ============================================================================
+
+/**
+ * 带锁的增量同步结果
+ */
+export interface LockedSyncResult {
+  executed: boolean;           // 同步是否执行
+  skippedReason?: string;      // 跳过原因（如果未执行）
+  result?: IncrementalSyncResult;  // 同步结果（如果执行了）
+  error?: string;              // 错误信息
+}
+
+/**
+ * 带分布式锁的增量同步
+ *
+ * 工作流程：
+ * 1. 检查锁和最近 commit 时间
+ * 2. 随机等待（jitter）
+ * 3. 二次检查
+ * 4. 创建锁文件
+ * 5. 执行同步
+ * 6. 释放锁文件
+ */
+export async function performIncrementalSyncWithLock(
+  plugin: Plugin,
+  settings: Settings,
+  statusBarEl: HTMLElement | null,
+  onProgress?: (message: string) => void
+): Promise<LockedSyncResult> {
+  const deviceName = getDeviceName();
+  await logInfo(`[IncrementalSync] Starting sync with lock for device: ${deviceName}`);
+
+  // 获取锁配置
+  const lockSettings: SyncLockConfig = settings.syncLock || {
+    enabled: true,
+    lockTtl: 10 * 60 * 1000,
+    firstCheckThreshold: 10 * 60 * 1000,
+    secondCheckThreshold: 5 * 60 * 1000,
+    jitterRange: 15 * 1000
+  };
+
+  // 如果锁机制禁用，直接执行同步
+  if (!lockSettings.enabled) {
+    await logInfo(`[IncrementalSync] Lock mechanism disabled, proceeding directly`);
+    try {
+      const result = await performIncrementalSync(plugin, settings, onProgress);
+      return { executed: true, result };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      showSyncErrorStatus(statusBarEl, errorMsg);
+      return { executed: false, error: errorMsg };
+    }
+  }
+
+  // 尝试获取锁
+  const lockResult = await acquireSyncLock(
+    settings,
+    lockSettings,
+    onProgress,
+    (remaining) => showJitterCountdown(statusBarEl, remaining)
+  );
+
+  if (!lockResult.canSync) {
+    // 无法获取锁，显示原因并返回
+    const reason = lockResult.reason || "Unknown reason";
+    await logInfo(`[IncrementalSync] Sync skipped: ${reason}`);
+    showSyncSkippedStatus(statusBarEl, reason);
+    return { executed: false, skippedReason: reason };
+  }
+
+  // 成功获取锁，执行同步
+  try {
+    await logInfo(`[IncrementalSync] Lock acquired, starting sync`);
+    const result = await performIncrementalSync(plugin, settings, onProgress);
+
+    // 显示完成状态
+    const timeSeconds = result.totalTime / 1000;
+    showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
+
+    return { executed: true, result };
+
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await logError(`[IncrementalSync] Sync failed: ${errorMsg}`);
+    showSyncErrorStatus(statusBarEl, errorMsg);
+    return { executed: false, error: errorMsg };
+
+  } finally {
+    // 始终释放锁
+    await logInfo(`[IncrementalSync] Releasing lock`);
+    await releaseSyncLock(settings);
+  }
+}
+
+/**
+ * 强制同步（无视锁和时间检查）
+ */
+export async function performForceSyncWithLock(
+  plugin: Plugin,
+  settings: Settings,
+  statusBarEl: HTMLElement | null,
+  onProgress?: (message: string) => void
+): Promise<LockedSyncResult> {
+  const deviceName = getDeviceName();
+  await logInfo(`[IncrementalSync] Starting FORCE sync for device: ${deviceName}`);
+
+  showForceSyncStatus(statusBarEl);
+
+  // 获取锁配置
+  const lockSettings: SyncLockConfig = settings.syncLock || {
+    enabled: true,
+    lockTtl: 10 * 60 * 1000,
+    firstCheckThreshold: 10 * 60 * 1000,
+    secondCheckThreshold: 5 * 60 * 1000,
+    jitterRange: 15 * 1000
+  };
+
+  // 强制创建锁（覆盖现有锁）
+  if (lockSettings.enabled) {
+    await logInfo(`[IncrementalSync] Force creating lock`);
+    await createSyncLock(settings, lockSettings);
+  }
+
+  // 执行同步
+  try {
+    const result = await performIncrementalSync(plugin, settings, onProgress);
+
+    // 显示完成状态
+    const timeSeconds = result.totalTime / 1000;
+    showSyncCompleteStatus(statusBarEl, result.docsUploaded, result.assetsUploaded, timeSeconds);
+
+    return { executed: true, result };
+
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await logError(`[IncrementalSync] Force sync failed: ${errorMsg}`);
+    showSyncErrorStatus(statusBarEl, errorMsg);
+    return { executed: false, error: errorMsg };
+
+  } finally {
+    // 始终释放锁
+    if (lockSettings.enabled) {
+      await logInfo(`[IncrementalSync] Releasing lock after force sync`);
+      await releaseSyncLock(settings);
+    }
+  }
 }
